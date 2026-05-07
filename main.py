@@ -9,6 +9,7 @@ from agents.importance_agent.router import router as importance_router
 from agents.evaluation_agent.router import router as evaluation_router
 from agents.question_agent.router import router as question_router
 from agents.retrieval_agent.router import router as retrieval_router
+from agents.personalized_agent.router import router as personalized_router
 from api.workflow import router as workflow_router
 
 # 서버가 켜질 때 자동으로 실행될 준비(시작) 작업을 정의
@@ -51,7 +52,13 @@ app.include_router(
 app.include_router(
     evaluation_router, 
     prefix="/evaluation",  
-    tags=["평가+개인화 Agent"]
+    tags=["평가 Agent"]
+)
+
+app.include_router(
+    personalized_router, 
+    prefix="/personalized",  
+    tags=["개인화 Agent"]
 )
 
 app.include_router(
