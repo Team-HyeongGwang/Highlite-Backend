@@ -6,12 +6,7 @@ langchain-anthropic
 langgraph
 
 # RAG
-chromadb
 tiktoken
-
-# 기타 유틸
-python-dotenv
-pydantic
 
 # 백엔드 서버 핵심 (FastAPI)
 fastapi==0.110.0
