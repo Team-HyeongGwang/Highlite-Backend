@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, JSON, ForeignKey, DateTime, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 from db.database import Base
 
 class User(Base):
@@ -32,6 +33,7 @@ class DocumentChunk(Base):
     page_number = Column(Integer)
     original_text = Column(Text, nullable=False)
     meta_data = Column(JSON, nullable=True) 
+    embedding = Column(Vector(1536), nullable=True)  # OpenAI text-embedding-3-small
 
     document = relationship("Document", back_populates="chunks")
     importance = relationship("ImportanceResult", back_populates="chunk", uselist=False)
