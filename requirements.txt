@@ -3,6 +3,7 @@ langchain
 langchain-community
 langchain-openai
 langchain-anthropic
+langchain-postgres 
 langgraph
 
 # RAG
@@ -12,9 +13,10 @@ tiktoken
 fastapi==0.110.0
 uvicorn==0.27.1
 
-# 데이터베이스 통신 (Supabase/PostgreSQL)
+# 데이터베이스 통신 (Supabase/PostgreSQL/pgvector)
 sqlalchemy==2.0.28
 asyncpg==0.29.0
+pgvector==0.8.0
 
 # 환경 변수 및 데이터 검증 (보안 & Pydantic)
 python-dotenv==1.0.1
