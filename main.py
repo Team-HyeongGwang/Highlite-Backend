@@ -70,7 +70,7 @@ app.include_router(
 app.include_router(
     retrieval_router, 
     prefix="/retrieval",  
-    tags=["RAG Agent"]
+    tags=["RAG 검색 Agent"]
 )
 
 app.include_router(
