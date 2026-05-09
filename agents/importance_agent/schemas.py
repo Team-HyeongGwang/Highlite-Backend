@@ -1,13 +1,12 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 
-class VisualCue(BaseModel):
-    type: str = Field(..., description="시각 정보 종류 ('highlight', 'pen', 'memo')")
-    color: str = Field(..., description="색상 ('yellow', 'red' 등)")
-    target_text: str = Field(..., description="필기/강조된 텍스트 내용")
+from common.schemas import VisualCue
 
 class ImportanceRequest(BaseModel):
+    group_id: str
     chunk_id: int
+    doc_type: str 
     original_text: str
     meta_data: List[VisualCue] = Field(default_factory=list)
     highlighter_ranking: Dict[str, int] = Field(..., description="형광펜 중요도 순위")
