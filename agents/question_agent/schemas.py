@@ -14,18 +14,21 @@ class QuestionItem(BaseModel):
     options: Optional[Dict[str, str]] = Field(None, description="객관식일 경우 4지선다 보기")
     answer: str
     explanation: str
+    question_number: int = Field(..., description="문제 번호 (1, 2, 3...)")
+    priority: int = Field(..., description="중요도 순위 (1/2/3)")
+    source_type: str = Field(..., description="'highlight' 또는 'pen'")
+    page_number: int = Field(..., description="출처 페이지 번호")
 
 class QuestionGenerateResponse(BaseModel):
     questions: List[QuestionItem]
 
-# 피드백 재생성 (router.py에서 이동)
 class RegenerateRequest(BaseModel):
     question_id: int
     importance_id: int
     context_text: str
     keywords: List[str]
     question_type: str
-    feedback_type: str  # "ambiguous" / "wrong_answer" / "unclear_explanation" / "irrelevant"
+    feedback_type: str
     retry_count: int = 0
 
 class RegenerateResponse(BaseModel):

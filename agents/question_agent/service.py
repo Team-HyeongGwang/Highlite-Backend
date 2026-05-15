@@ -1,4 +1,4 @@
-import random, json, math, asyncio, httpx, anthropic, openai
+import random, json, math, asyncio, httpx, anthropic, openai, os
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -31,6 +31,16 @@ def get_priority(meta_data: list, highlighter_ranking: dict, pen_ranking: dict) 
             continue
         best = min(best, rank)
     return best if best != 99 else 3
+
+# ────────────────────────────────────────
+# source_type 결정
+# ────────────────────────────────────────
+def get_source_type(meta_data: list) -> str:
+    for cue in meta_data or []:
+        cue_type = cue.get("type") if isinstance(cue, dict) else cue.type
+        if cue_type == "pen":
+            return "pen"
+    return "highlight"
 
 # ────────────────────────────────────────
 # 문제 유형 결정
@@ -188,7 +198,6 @@ async def generate_questions_service(
     db: AsyncSession,
 ) -> QuestionGenerateResponse:
 
-    # 1) document → chunks → importance_results 한번에 가져오기
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
@@ -200,7 +209,6 @@ async def generate_questions_service(
     if not rows:
         raise ValueError("해당 문서의 중요도 분석 결과가 없습니다.")
 
-    # 2) User ranking 가져오기
     document = rows[0][2]
     user_q = await db.execute(select(User).where(User.id == document.user_id))
     user = user_q.scalar_one_or_none()
@@ -208,7 +216,6 @@ async def generate_questions_service(
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
 
-    # 3) 청크를 순위별로 분류
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
         priority = get_priority(
@@ -218,10 +225,8 @@ async def generate_questions_service(
         )
         chunks_by_priority[priority].append((importance, chunk))
 
-    # 4) 순위별 출제 수 계산
     counts = distribute_counts(request.question_count, chunks_by_priority)
 
-    # 5) 문제 생성
     generated: List[QuestionItem] = []
 
     for priority, target_count in counts.items():
@@ -241,14 +246,12 @@ async def generate_questions_service(
             keywords = importance.keywords or []
             prompt = build_prompt(chunk.original_text, keywords, question_type)
 
-            # Claude + GPT 동시 호출
             claude_result, gpt_result = await asyncio.gather(
                 call_claude(prompt),
                 call_gpt(prompt),
                 return_exceptions=True,
             )
 
-            # 평가 Agent에 각각 보내서 점수 받기
             candidates = []
             for source, result in [("claude", claude_result), ("gpt", gpt_result)]:
                 if isinstance(result, Exception):
@@ -273,7 +276,6 @@ async def generate_questions_service(
             if not candidates:
                 continue
 
-            # 승인된 것 중 quality_score 높은 거 선택
             approved = [c for c in candidates if c["review"]["is_approved"]]
 
             if approved:
@@ -289,7 +291,6 @@ async def generate_questions_service(
 
             result = best["result"]
 
-            # DB 저장
             question = Question(
                 importance_id=importance.id,
                 question_type=question_type,
@@ -302,6 +303,9 @@ async def generate_questions_service(
             db.add(question)
             await db.flush()
 
+            # source_type 결정
+            source_type = get_source_type(chunk.meta_data or [])
+
             generated.append(QuestionItem(
                 chunk_id=chunk.id,
                 question_type=question_type,
@@ -309,6 +313,10 @@ async def generate_questions_service(
                 options=result.get("options"),
                 answer=result["answer"],
                 explanation=result["explanation"],
+                question_number=len(generated) + 1,  # 1번부터 순서대로
+                priority=priority,                    # 1/2/3순위
+                source_type=source_type,              # highlight / pen
+                page_number=chunk.page_number,        # 출처 페이지
             ))
 
     await db.commit()
