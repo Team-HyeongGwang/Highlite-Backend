@@ -32,31 +32,42 @@ async def receive_chunks(chunks: list[PDFChunk]) -> list[PDFChunk]:
     return chunks
 
 
-# # ── 임베딩 계산 ────────────────────────────────────────
-# async def compute_embedding(text: str) -> List[float]:
-#     """단일 텍스트 임베딩 계산"""
-#     response = await openai_client.embeddings.create(
-#         model=OPENAI_EMBEDDING_MODEL,
-#         input=text,
-#     )
-#     return response.data[0].embedding
+# ── 임베딩 계산 ────────────────────────────────────────
+async def compute_embedding(text: str) -> List[float]:
+    """단일 텍스트 임베딩 계산"""
+    response = await openai_client.embeddings.create(
+        model=OPENAI_EMBEDDING_MODEL,
+        input=text,
+    )
+    return response.data[0].embedding
 
 
-# async def compute_embeddings_batch(
-#     texts: List[str],
-#     batch_size: int = 100,
-# ) -> List[List[float]]:
-#     """배치 임베딩 계산 (OpenAI는 한 번에 최대 2048개 지원)"""
-#     all_embeddings = []
+async def compute_embeddings_batch(
+    texts: List[str],
+    batch_size: int = 100,
+) -> List[List[float]]:
+    """배치 임베딩 계산 (OpenAI는 한 번에 최대 2048개 지원)"""
+    all_embeddings = []
 
-#     for i in range(0, len(texts), batch_size):
-#         batch = texts[i : i + batch_size]
-#         response = await openai_client.embeddings.create(
-#             model=OPENAI_EMBEDDING_MODEL,
-#             input=batch,
-#         )
-#         # 순서 보장: response.data는 index 기준 정렬됨
-#         sorted_data = sorted(response.data, key=lambda x: x.index)
-#         all_embeddings.extend([item.embedding for item in sorted_data])
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        response = await openai_client.embeddings.create(
+            model=OPENAI_EMBEDDING_MODEL,
+            input=batch,
+        )
+        # 순서 보장: response.data는 index 기준 정렬됨
+        sorted_data = sorted(response.data, key=lambda x: x.index)
+        all_embeddings.extend([item.embedding for item in sorted_data])
 
-#     return all_embeddings
+    return all_embeddings
+
+# PDFChunk.content만 임베딩
+async def embed_chunks(chunks: list[PDFChunk]) -> list[PDFChunk]:
+    texts = [chunk.content for chunk in chunks]
+    embeddings = await compute_embeddings_batch(texts)
+    for chunk, emb in zip(chunks, embeddings):
+        chunk.embedding = emb
+    return chunks
+
+
+# ── 임베딩 값 DB에 저장 ────────────────────────────────────────
