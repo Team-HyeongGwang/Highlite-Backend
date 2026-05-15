@@ -3,10 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
-import random, json, anthropic, math
+import random, json, anthropic, math, asyncio, httpx, openai
 
 from db.database import get_db
-from db.models import Question, ImportanceResult, DocumentChunk, Document
+from db.models import Question, ImportanceResult, DocumentChunk, Document, User
 from agents.question_agent.schemas import (
     QuestionGenerateRequest,
     QuestionGenerateResponse,
@@ -14,7 +14,10 @@ from agents.question_agent.schemas import (
 )
 
 router = APIRouter()
-client = anthropic.AsyncAnthropic()
+claude_client = anthropic.AsyncAnthropic()
+gpt_client = openai.AsyncOpenAI()
+
+EVALUATION_URL = "http://127.0.0.1:8000/evaluation/review"  # 서형이 완성되면 여기만 수정
 
 # ────────────────────────────────────────
 # 순위 결정
@@ -57,7 +60,6 @@ def distribute_counts(total: int, chunks_by_priority: dict) -> dict:
         counts[priority] = math.floor(total * ratio[priority])
         remainder -= counts[priority]
 
-    # 나머지 문제 수 높은 순위에 추가
     for priority in [1, 2, 3]:
         if priority in counts and remainder > 0:
             counts[priority] += remainder
@@ -109,10 +111,10 @@ def build_prompt(
 """
 
 # ────────────────────────────────────────
-# Claude 호출 공통 함수
+# Claude 호출
 # ────────────────────────────────────────
 async def call_claude(prompt: str) -> dict:
-    message = await client.messages.create(
+    message = await claude_client.messages.create(
         model="claude-opus-4-5",
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}],
@@ -120,6 +122,43 @@ async def call_claude(prompt: str) -> dict:
     raw = message.content[0].text
     clean = raw.replace("```json", "").replace("```", "").strip()
     return json.loads(clean)
+
+# ────────────────────────────────────────
+# GPT 호출
+# ────────────────────────────────────────
+async def call_gpt(prompt: str) -> dict:
+    response = await gpt_client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=1000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = response.choices[0].message.content
+    clean = raw.replace("```json", "").replace("```", "").strip()
+    return json.loads(clean)
+
+# ────────────────────────────────────────
+# 평가 Agent 호출
+# ────────────────────────────────────────
+async def call_evaluation(
+    group_id: str,
+    source_chunk_text: str,
+    question_text: str,
+    options: Optional[dict],
+    answer: str,
+    explanation: str,
+) -> dict:
+    payload = {
+        "group_id": group_id,
+        "source_chunk_text": source_chunk_text,
+        "question_text": question_text,
+        "options": options,
+        "answer": answer,
+        "explanation": explanation,
+    }
+    async with httpx.AsyncClient(timeout=30) as http_client:
+        response = await http_client.post(EVALUATION_URL, json=payload)
+        response.raise_for_status()
+        return response.json()
 
 # ────────────────────────────────────────
 # 1. 문제 생성 (document 기준 일괄 생성)
@@ -141,17 +180,9 @@ async def generate_questions(
     if not rows:
         raise HTTPException(status_code=404, detail="해당 문서의 중요도 분석 결과가 없습니다.")
 
-    # 2) 사용자 순위 설정 가져오기 (Document → User)
+    # 2) User ranking 가져오기
     document = rows[0][2]
-    user_stmt = select(Document).where(Document.id == document.id)
-    user_result = await db.execute(user_stmt)
-    doc = user_result.scalar_one_or_none()
-
-    # User에서 ranking 가져오기
-    user_stmt2 = select(importlib_User).where(importlib_User.id == doc.user_id)
-    # → 아래처럼 Document.owner 관계 활용
-    from db.models import User
-    user_q = await db.execute(select(User).where(User.id == doc.user_id))
+    user_q = await db.execute(select(User).where(User.id == document.user_id))
     user = user_q.scalar_one_or_none()
 
     highlighter_ranking = user.highlighter_ranking or {}
@@ -178,10 +209,8 @@ async def generate_questions(
         if not pool:
             continue
 
-        # 중요도 score 높은 순으로 정렬 → 높은 것부터 출제
         pool_sorted = sorted(pool, key=lambda x: x[0].score, reverse=True)
 
-        # 문제 수가 청크 수보다 많으면 반복 허용
         selected = []
         while len(selected) < target_count:
             selected += pool_sorted
@@ -192,23 +221,67 @@ async def generate_questions(
             keywords = importance.keywords or []
             prompt = build_prompt(chunk.original_text, keywords, question_type)
 
-            try:
-                result = await call_claude(prompt)
-            except Exception:
-                continue  # 파싱 실패 시 해당 문제 스킵
+            # Claude + GPT 동시 호출
+            claude_result, gpt_result = await asyncio.gather(
+                call_claude(prompt),
+                call_gpt(prompt),
+                return_exceptions=True,
+            )
+
+            # 평가 Agent에 각각 보내서 점수 받기
+            candidates = []
+            for source, result in [("claude", claude_result), ("gpt", gpt_result)]:
+                if isinstance(result, Exception):
+                    continue
+                try:
+                    review = await call_evaluation(
+                        group_id=request.group_id,
+                        source_chunk_text=chunk.original_text,
+                        question_text=result["question_text"],
+                        options=result.get("options"),
+                        answer=result["answer"],
+                        explanation=result["explanation"],
+                    )
+                    candidates.append({
+                        "source": source,
+                        "result": result,
+                        "review": review,
+                    })
+                except Exception:
+                    continue
+
+            if not candidates:
+                continue
+
+            # 승인된 것 중 quality_score 높은 거 선택
+            approved = [c for c in candidates if c["review"]["is_approved"]]
+
+            if approved:
+                best = max(approved, key=lambda x: x["review"]["quality_score"])
+            else:
+                # 둘 다 반려됐지만 suggested_revision 있으면 그걸로 대체
+                revised = [c for c in candidates if c["review"].get("suggested_revision_text")]
+                if not revised:
+                    continue
+                best = revised[0]
+                best["result"]["question_text"] = best["review"]["suggested_revision_text"]
+                if best["review"].get("suggested_revision_options"):
+                    best["result"]["options"] = best["review"]["suggested_revision_options"]
+
+            result = best["result"]
 
             # DB 저장
             question = Question(
                 importance_id=importance.id,
                 question_type=question_type,
-                difficulty=str(priority),   # 순위를 difficulty에 저장
+                difficulty=str(priority),
                 question_text=result["question_text"],
                 options=result.get("options"),
                 answer=result["answer"],
                 explanation=result["explanation"],
             )
             db.add(question)
-            await db.flush()  # id 받기 위해 flush
+            await db.flush()
 
             generated.append(QuestionItem(
                 chunk_id=chunk.id,
