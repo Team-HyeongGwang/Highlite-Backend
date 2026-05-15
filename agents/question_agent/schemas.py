@@ -1,6 +1,7 @@
 # agents/question_agent/schemas.py
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
+from common.schemas import VisualCue
 
 class QuestionGenerateRequest(BaseModel):
     group_id: str = Field(..., description="문제를 출제할 문서 세트 ID")
