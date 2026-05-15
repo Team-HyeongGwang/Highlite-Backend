@@ -11,13 +11,11 @@ async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession)
     [1타 강사 AI] LLM을 호출하여 청크의 중요도 점수와 키워드를 추출합니다.
     """
     
-    # 1. LLM 모델 준비 (최신 gpt-4o-mini 모델 추천)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
     
-    # 2. LLM에게 "무조건 이 Pydantic 양식대로 대답해!" 라고 강제하기
+    # LLM output 양식
     structured_llm = llm.with_structured_output(ImportanceResponse)
     
-    # 3. 프롬프트 세팅
     system_prompt = """
     당신은 대학 전공 서적과 학생의 필기 노트를 분석하여 '시험 출제 확률(중요도)'을 0.0에서 10.0 사이의 점수로 평가하는 1타 강사 AI입니다. 
     
@@ -50,7 +48,6 @@ async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession)
         ("user", user_prompt)
     ])
     
-    # 4. 프롬프트에 데이터 넣고 LLM 실행
     chain = prompt_template | structured_llm
     
     response: ImportanceResponse = chain.invoke({
