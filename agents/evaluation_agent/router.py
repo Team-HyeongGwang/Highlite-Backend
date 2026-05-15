@@ -6,7 +6,7 @@ from agents.evaluation_agent.schemas import (
     QuestionReviewRequest, QuestionReviewResponse,
     FeedbackRequest, FeedbackResponse,
 )
-from agents.evaluation_agent.agent import review, regenerate_from_feedback
+from agents.evaluation_agent.service import review, regenerate_from_feedback
 
 router = APIRouter()
 
