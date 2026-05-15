@@ -1,4 +1,3 @@
-from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,6 +10,8 @@ from agents.question_agent.schemas import (
     QuestionGenerateRequest,
     QuestionGenerateResponse,
     QuestionItem,
+    RegenerateRequest,
+    RegenerateResponse,
 )
 
 router = APIRouter()
@@ -78,9 +79,22 @@ def build_prompt(
     feedback_type: Optional[str] = None,
 ) -> str:
     type_guide = {
-        "multiple_choice":   '4지선다 객관식 문제. options에 "①","②","③","④" 키로 보기 4개.',
-        "ox":                'O/X 문제. options는 null.',
-        "fill_in_the_blank": '빈칸 채우기 문제. 핵심 키워드 자리를 ___로 표시. options는 null.',
+        "multiple_choice": """4지선다 객관식 문제.
+- 정답은 반드시 1개
+- 오답 3개는 그럴싸하지만 명확히 틀린 것으로
+- 선지는 비슷한 길이로
+- options에 "①","②","③","④" 키로 보기 4개""",
+
+        "ox": """O/X 문제.
+- 문장은 명확하게 참 또는 거짓이어야 함
+- 애매한 문장 금지
+- options는 null""",
+
+        "fill_in_the_blank": """빈칸 채우기 문제.
+- 핵심 키워드 자리를 ___로 표시
+- 빈칸은 1~2개만
+- 정답은 키워드 그대로
+- options는 null""",
     }[question_type]
 
     feedback_guide = ""
@@ -94,11 +108,22 @@ def build_prompt(
         feedback_guide = f"\n주의: {feedback_map.get(feedback_type, '')}"
 
     return f"""
-너는 대학교 시험 문제 출제자야.
-아래 원문을 기반으로 {type_guide}{feedback_guide}
+너는 대학교 시험 문제 출제 전문가야.
+아래 원문을 기반으로 문제를 만들어.
 
-원문: {context_text}
-핵심 키워드: {', '.join(keywords)}
+[원문]
+{context_text}
+
+[핵심 키워드]
+{', '.join(keywords)}
+
+[문제 유형 및 조건]
+{type_guide}{feedback_guide}
+
+[주의사항]
+- 반드시 원문에 있는 내용만 다뤄
+- 원문에 없는 내용 추가 금지
+- 해설은 원문 근거를 포함해서 2~3문장으로
 
 반드시 아래 JSON 형식으로만 응답해. 다른 말은 하지 마.
 {{
@@ -299,23 +324,6 @@ async def generate_questions(
 # ────────────────────────────────────────
 # 2. 피드백 기반 재생성
 # ────────────────────────────────────────
-class RegenerateRequest(BaseModel):
-    question_id: int
-    importance_id: int
-    context_text: str
-    keywords: List[str]
-    question_type: str
-    feedback_type: str  # "ambiguous" / "wrong_answer" / "unclear_explanation" / "irrelevant"
-    retry_count: int = 0
-
-class RegenerateResponse(BaseModel):
-    question_id: int
-    question_type: str
-    question_text: str
-    options: Optional[dict] = None
-    answer: str
-    explanation: str
-
 @router.post("/regenerate", response_model=RegenerateResponse)
 async def regenerate_question(
     request: RegenerateRequest,
