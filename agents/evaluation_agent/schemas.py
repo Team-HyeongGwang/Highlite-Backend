@@ -22,20 +22,3 @@ class QuestionReviewResponse(BaseModel):
     suggested_revision_options: Optional[Dict[str, str]] = None
 
 
-class FeedbackType(str, Enum):
-    wrong_answer     = "wrong_answer"       # 정답이 틀림
-    ambiguous        = "ambiguous"          # 문제가 애매함
-    not_in_source    = "not_in_source"      # 원본에 없는 내용
-    multiple_correct = "multiple_correct"   # 복수 정답 존재
-
-class FeedbackRequest(BaseModel):
-    question_id: int
-    feedback_type: FeedbackType
-
-class FeedbackResponse(BaseModel):
-    regenerated: bool
-    new_question_text: Optional[str] = None
-    new_options: Optional[Dict[str, str]] = None
-    new_answer: Optional[str] = None
-    new_explanation: Optional[str] = None
-    message: str

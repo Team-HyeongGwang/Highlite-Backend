@@ -8,7 +8,6 @@ from langchain_core.messages import HumanMessage
 from db.models import Question, ImportanceResult, DocumentChunk
 from agents.evaluation_agent.schemas import (
     QuestionReviewRequest, QuestionReviewResponse,
-    FeedbackType, FeedbackResponse,
 )
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -66,58 +65,3 @@ JSON 형식으로만 응답하세요:
     )
 
 
-async def regenerate_from_feedback(question_id: int, feedback_type: FeedbackType, db: AsyncSession) -> FeedbackResponse:
-    result = await db.execute(
-        select(Question, DocumentChunk)
-        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
-        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
-        .where(Question.id == question_id)
-    )
-    row = result.first()
-    if not row:
-        return None
-
-    question, chunk = row
-    instruction = _FEEDBACK_INSTRUCTION[feedback_type]
-
-    regen_resp = await llm.ainvoke([HumanMessage(content=f"""
-당신은 시험 문제 출제 전문가입니다.
-
-[원본 텍스트]
-{chunk.original_text}
-
-[기존 문제]
-문제: {question.question_text}
-정답: {question.answer}
-
-[재생성 이유]
-{instruction}
-
-같은 유형({question.question_type})으로 새 문제를 출제하세요.
-원본 텍스트에만 근거해서 작성하세요.
-
-JSON 형식으로만 응답:
-{{
-  "question_text": "새 문제 지문",
-  "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}} 또는 null,
-  "answer": "정답",
-  "explanation": "해설"
-}}
-""")])
-
-    new_q = json.loads(regen_resp.content)
-
-    question.question_text = new_q["question_text"]
-    question.options = new_q.get("options")
-    question.answer = new_q["answer"]
-    question.explanation = new_q["explanation"]
-    await db.commit()
-
-    return FeedbackResponse(
-        regenerated=True,
-        new_question_text=new_q["question_text"],
-        new_options=new_q.get("options"),
-        new_answer=new_q["answer"],
-        new_explanation=new_q["explanation"],
-        message=f"재생성 완료 ({feedback_type.value})",
-    )

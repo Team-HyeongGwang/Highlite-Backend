@@ -20,9 +20,3 @@ async def review_question(req: QuestionReviewRequest):
     return await review(req)
 
 
-@router.post("/feedback", response_model=FeedbackResponse)
-async def handle_feedback(req: FeedbackRequest, db: AsyncSession = Depends(get_db)):
-    result = await regenerate_from_feedback(req.question_id, req.feedback_type, db)
-    if result is None:
-        raise HTTPException(status_code=404, detail="문제를 찾을 수 없습니다")
-    return result
