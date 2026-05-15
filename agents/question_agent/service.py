@@ -15,8 +15,6 @@ from agents.question_agent.schemas import (
 claude_client = anthropic.AsyncAnthropic()
 gpt_client = openai.AsyncOpenAI()
 
-EVALUATION_URL = "http://127.0.0.1:8000/evaluation/review"  # 서형이 완성되면 여기만 수정
-
 # ────────────────────────────────────────
 # 순위 결정
 # ────────────────────────────────────────
