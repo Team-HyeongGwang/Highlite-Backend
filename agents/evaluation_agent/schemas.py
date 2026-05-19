@@ -20,3 +20,5 @@ class QuestionReviewResponse(BaseModel):
     # "이렇게 고치면 어때?" 하고 바로 수정안을 던져줄 수도 있음
     suggested_revision_text: Optional[str] = Field(None, description="제안하는 문제 지문 수정안")
     suggested_revision_options: Optional[Dict[str, str]] = None
+
+
