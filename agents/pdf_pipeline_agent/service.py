@@ -84,12 +84,19 @@ async def create_document(
     return document
 
 # PDFChunk 생성
-async def create_pdf_chunks(pdf_path: Path) -> list[PDFChunk]:
+async def create_pdf_chunks(
+    pdf_path: Path,
+    user_id: int,
+    group_id: str,
+    session: AsyncSession,
+) -> None:
+    document = await create_document(pdf_path, user_id, group_id, session)
+    
     pdf_name = pdf_path.stem
     raw_chunks = extract_from_pdf(pdf_path)
     chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
-    result = await send_chunks_to_retrieval_agent(chunks) 
-    return result
+    
+    await send_chunks_to_retrieval_agent(chunks, document.id, session)
 
 # retrieval_agent에 결과 전달
 async def send_chunks_to_retrieval_agent(chunks: list[PDFChunk], document_id: int, session: AsyncSession):
