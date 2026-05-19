@@ -49,10 +49,18 @@ async def save_embeddings_to_db(input: dict) -> dict:
     session: AsyncSession = input["session"]
 
     for chunk in chunks:
+        # original_text 결정
+        original_text = chunk.content
+        if not original_text:
+            if chunk.annotation.handwriting_content:
+                original_text = chunk.annotation.handwriting_content
+            elif chunk.annotation.highlight_content:
+                original_text = chunk.annotation.highlight_content
+
         db_chunk = DocumentChunk(
             document_id=document_id,
             page_number=chunk.page,
-            original_text=chunk.content,
+            original_text=original_text,
             embedding=chunk.embedding,
             meta_data={
                 "pdf_name": chunk.pdf_name,
