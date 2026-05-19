@@ -65,10 +65,8 @@ async def save_embeddings_to_db(input: dict) -> dict:
             meta_data={
                 "pdf_name": chunk.pdf_name,
                 "paragraph_index": chunk.paragraph_index,
-                "has_handwriting": chunk.annotation.has_handwriting,
-                "has_highlight": chunk.annotation.has_highlight,
-                "handwriting_content": chunk.annotation.handwriting_content,
-                "highlight_content": chunk.annotation.highlight_content,
+                "handwriting_color": chunk.annotation.handwriting_color,
+                "highlight_color": chunk.annotation.highlight_color,
             },
         )
         session.add(db_chunk)
