@@ -90,13 +90,23 @@ async def create_pdf_chunks(
     group_id: str,
     session: AsyncSession,
 ) -> None:
-    document = await create_document(pdf_path, user_id, group_id, session)
-    
-    pdf_name = pdf_path.stem
-    raw_chunks = extract_from_pdf(pdf_path)
-    chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
-    
-    await send_chunks_to_retrieval_agent(chunks, document.id, session)
+    try:
+        document = await create_document(pdf_path, user_id, group_id, session)
+        print(f"[1] document 생성 완료 id={document.id}")
+        
+        pdf_name = pdf_path.stem
+        raw_chunks = extract_from_pdf(pdf_path)
+        print(f"[2] PDF 파싱 완료 count={len(raw_chunks)}")
+        
+        chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
+        print(f"[3] 청크 변환 완료 count={len(chunks)}")
+        
+        await send_chunks_to_retrieval_agent(chunks, document.id, session)
+        print(f"[4] 임베딩 + 저장 완료")
+        
+    except Exception as e:
+        print(f"에러 발생: {e}")
+        raise
 
 # retrieval_agent에 결과 전달
 async def send_chunks_to_retrieval_agent(chunks: list[PDFChunk], document_id: int, session: AsyncSession):
