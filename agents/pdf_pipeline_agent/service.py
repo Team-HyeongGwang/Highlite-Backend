@@ -3,12 +3,14 @@ import base64
 import fitz  # PyMuPDF
 from typing import TypedDict
 from pathlib import Path
+from db.models import Document
 
-from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
-from schemas import PDFChunk, parse_chunk
+from agents.pdf_pipeline_agent.schemas import PDFChunk, parse_chunk 
+from agents.retrieval_agent.service import rag_chain 
+from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
 
@@ -64,16 +66,35 @@ def extract_from_pdf(pdf_path: Path) -> list[dict]:
     doc.close()
     return pages
 
+# Document 저장
+async def create_document(
+    pdf_path: Path,
+    user_id: int,
+    group_id: str,
+    session: AsyncSession,
+) -> Document:
+    document = Document(
+        user_id=user_id,
+        group_id=group_id,
+        title=pdf_path.stem,
+        doc_type="combined",
+    )
+    session.add(document)
+    await session.flush() 
+    return document
 
 # PDFChunk 생성
-def run_pdf_pipeline(pdf_path: Path) -> list[PDFChunk]:
-    """extract → parse → retrieval_agent 전달까지 한번에"""
-    pdf_name = pdf_path.stem  # 파일명 (확장자 제외)
-
-    # 1. PDF → raw dict 추출
+async def run_pdf_pipeline(pdf_path: Path) -> list[PDFChunk]:
+    pdf_name = pdf_path.stem
     raw_chunks = extract_from_pdf(pdf_path)
-
-    # 2. raw dict → PDFChunk 변환
     chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
+    result = await send_chunks_to_retrieval_agent(chunks) 
+    return result
 
-    return chunks
+# retrieval_agent에 결과 전달
+async def send_chunks_to_retrieval_agent(chunks: list[PDFChunk], document_id: int, session: AsyncSession):
+    await rag_chain.ainvoke({
+        "chunks": chunks,
+        "document_id": document_id,
+        "session": session,
+    })
