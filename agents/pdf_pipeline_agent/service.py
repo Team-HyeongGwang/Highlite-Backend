@@ -4,12 +4,12 @@ import fitz  # PyMuPDF
 from typing import TypedDict
 from pathlib import Path
 
-from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
 from agents.pdf_pipeline_agent.schemas import PDFChunk, parse_chunk 
-from agents.retrieval_agent.service import receive_chunks 
+from agents.retrieval_agent.service import rag_chain 
+from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
 
@@ -75,6 +75,9 @@ async def run_pdf_pipeline(pdf_path: Path) -> list[PDFChunk]:
     return result
 
 # retrieval_agent에 결과 전달
-async def send_chunks_to_retrieval_agent(chunks: list[PDFChunk]):
-    result = await receive_chunks(chunks)
-    return result
+async def send_chunks_to_retrieval_agent(chunks: list[PDFChunk], document_id: int, session: AsyncSession):
+    await rag_chain.ainvoke({
+        "chunks": chunks,
+        "document_id": document_id,
+        "session": session,
+    })
