@@ -77,14 +77,14 @@ async def create_document(
         user_id=user_id,
         group_id=group_id,
         title=pdf_path.stem,
-        doc_type="combined",
+        doc_type="combined", # 수정 필요
     )
     session.add(document)
     await session.flush() 
     return document
 
 # PDFChunk 생성
-async def run_pdf_pipeline(pdf_path: Path) -> list[PDFChunk]:
+async def create_pdf_chunks(pdf_path: Path) -> list[PDFChunk]:
     pdf_name = pdf_path.stem
     raw_chunks = extract_from_pdf(pdf_path)
     chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
