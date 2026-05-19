@@ -11,6 +11,8 @@ class HighlightAnnotation(BaseModel):
     has_highlight: bool = False
     handwriting_content: Optional[str] = None
     highlight_content: Optional[str] = None
+    handwriting_color: Optional[str] = None
+    highlight_color: Optional[str] = None
 
 
 class PDFChunk(BaseModel):
@@ -25,18 +27,17 @@ class PDFChunk(BaseModel):
 
 
 def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
-    """
-    extract_from_pdf 결과 dict → PDFChunk 변환.
-    content 안의 [손필기: ...], [형광펜: ...] 태그를 파싱합니다.
-    """
     content = raw["content"]
 
-    def extract_tag(tag: str) -> Optional[str]:
-        match = re.search(rf"\[{tag}: (.+?)\]", content)
-        return match.group(1) if match else None
+    def extract_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
+        # [손필기: 내용 | 색상: 파란색] 형태 파싱
+        match = re.search(rf"\[{tag}: (.+?)(?:\s*\|\s*색상:\s*(.+?))?\]", content)
+        if match:
+            return match.group(1).strip(), match.group(2).strip() if match.group(2) else None
+        return None, None
 
-    handwriting = extract_tag("손필기")
-    highlight = extract_tag("형광펜")
+    handwriting, handwriting_color = extract_tag("손필기")
+    highlight, highlight_color = extract_tag("형광펜")
 
     clean_content = re.sub(r"\[(손필기|형광펜): .+?\]", "", content).strip()
 
@@ -50,5 +51,7 @@ def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
             has_highlight=highlight is not None,
             handwriting_content=handwriting,
             highlight_content=highlight,
+            handwriting_color=handwriting_color,
+            highlight_color=highlight_color,
         ),
     )
