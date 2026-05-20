@@ -1,5 +1,6 @@
 import os
 import base64
+import re
 import fitz  # PyMuPDF
 from typing import TypedDict
 from pathlib import Path
@@ -8,9 +9,10 @@ from db.models import Document
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
-from agents.pdf_pipeline_agent.schemas import PDFChunk, parse_chunk 
+from agents.pdf_pipeline_agent.schemas import PDFChunk
 from agents.retrieval_agent.service import rag_chain 
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 
 load_dotenv()
 
@@ -67,6 +69,38 @@ def extract_from_pdf(pdf_path: Path) -> list[dict]:
 
     doc.close()
     return pages
+
+# 청킹한 내용 파싱
+def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
+    raw_content = raw["content"]
+
+    def extract_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
+        # [손필기: 내용 | 색상: 파란색] 형태 파싱
+        match = re.search(rf"\[{tag}: (.+?)(?:\s*\|\s*색상:\s*(.+?))?\]", raw_content)
+        if match:
+            return match.group(1).strip(), match.group(2).strip() if match.group(2) else None
+        return None, None
+
+    handwriting, handwriting_color = extract_tag("손필기")
+    highlight, highlight_color = extract_tag("형광펜")
+
+    # [손필기: ...] 또는 [형광펜: ...] 태그를 문자열에서 완전히 지운 순수 텍스트
+    clean_content = re.sub(r"\[(손필기|형광펜): .+?\]", "", raw_content).strip()
+
+    # 만약 태그를 지웠더니 본문이 텅 비어있다면
+    # -> 이 청크는 "태그 내용 자체가 본문"인 상황 (예: 손필기만 달랑 있는 청크)
+    final_content = clean_content
+    if not final_content:
+        final_content = handwriting or highlight or ""
+
+    return PDFChunk(
+        pdf_name=pdf_name,
+        page=raw["page"],
+        paragraph_index=raw["paragraph_index"],
+        content=final_content,  # 모든 핵심 텍스트는 content 필드로 통합
+        handwriting_color=handwriting_color,
+        highlight_color=highlight_color,
+    )
 
 # Document 저장
 async def create_document(
