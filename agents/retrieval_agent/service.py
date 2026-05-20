@@ -5,6 +5,7 @@ import base64
 import re
 import fitz  # PyMuPDF
 from typing import TypedDict
+import asyncio
 from pathlib import Path
 from db.models import Document
 from agents.importance_agent.schemas import ImportanceRequest
@@ -18,10 +19,9 @@ from langchain_openai import OpenAIEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import DocumentChunk
-from agents.pdf_pipeline_agent.schemas import PDFChunk
+from .schemas import PDFChunk
 from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
-from agents.retrieval_agent.service import rag_chain 
 
 load_dotenv()
 
@@ -38,6 +38,35 @@ embeddings_model = OpenAIEmbeddings(
     model="text-embedding-3-small", # 임베딩 모델 고민 필요
     api_key=OPENAI_API_KEY,
 )
+
+# ── PDF 청크 파싱 ────────────────────────────────────────
+def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
+    raw_content = raw["content"]
+
+    def extract_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
+        match = re.search(rf"\[{tag}: (.+?)(?:\s*\|\s*색상:\s*(.+?))?\]", raw_content)
+        if match:
+            return match.group(1).strip(), match.group(2).strip() if match.group(2) else None
+        return None, None
+
+    handwriting, handwriting_color = extract_tag("손필기")
+    highlight, highlight_color = extract_tag("형광펜")
+
+    clean_content = re.sub(r"\[(손필기|형광펜): .+?\]", "", raw_content).strip()
+
+    final_content = clean_content
+    if not final_content:
+        final_content = handwriting or highlight or ""
+
+    return PDFChunk(
+        pdf_name=pdf_name,
+        page=raw["page"],
+        paragraph_index=raw["paragraph_index"],
+        content=final_content,
+        handwriting_color=handwriting_color,
+        highlight_color=highlight_color,
+    )
+
 
 # ── DB에 Document 저장 ────────────────────────────────────────
 async def init_document(input_data: dict) -> dict:
@@ -160,6 +189,8 @@ async def save_embeddings_to_db(input: dict) -> dict:
         chunk.db_id = db_chunk.id  
         
     return input
+
+
 # ── importance_agent에게 값 전달 ──────────────────────────────────────────
 async def send_to_importance_agent(input: dict) -> dict:
     chunks: list[PDFChunk] = input["chunks"]
@@ -170,6 +201,8 @@ async def send_to_importance_agent(input: dict) -> dict:
     doc_type = "pdf"
     highlighter_ranking = {"yellow": 1, "green": 2, "pink": 3}
     pen_ranking = {"red": 1, "blue": 2, "black": 3}
+
+    tasks = []
 
     for chunk in chunks:
         visual_cues: list[VisualCue] = []
@@ -198,12 +231,15 @@ async def send_to_importance_agent(input: dict) -> dict:
             pen_ranking=pen_ranking,
         )
 
-        print(f"\n[Sender: rag_chain] importance_agent로 데이터를 보냅니다.")
-        print(f"  - Chunk ID: {request.chunk_id}")
-        print(f"  - Visual Cues: {request.meta_data}")
-        print(f"  - Original Text: {request.original_text[:30]}...")
-
-        await analyze_chunk_importance(request, session)
+        tasks.append(analyze_chunk_importance(request, session))
+        
+        # 2. 🔥 담아둔 모든 중요도 분석 작업을 동시에 병렬(Concurrent)로 실행합니다!
+    print(f"\n[Master Pipeline] 총 {len(tasks)}개의 청크 중요도 분석을 동시에 시작합니다... 🚀")
+    
+    # asyncio.gather가 모든 대기 작업을 한 번에 쏘고 결과를 다 모아서 가져옵니다.
+    await asyncio.gather(*tasks)
+    
+    print(f"[Master Pipeline] 모든 청크의 중요도 분석 및 DB 저장이 완료되었습니다! 🎯")
         
     return input
 
@@ -218,3 +254,24 @@ pdf_pipeline_chain = (
     | RunnableLambda(save_embeddings_to_db)
     | RunnableLambda(send_to_importance_agent)
 )
+
+# 외부(라우터)에서 호출할 메인 파이프라인 구동 함수
+async def run_pdf_pipeline(
+    pdf_path: Path,
+    user_id: int,
+    group_id: str,
+    session: AsyncSession,
+) -> None:
+    try:
+        print(f"\n[Master Pipeline] '{pdf_path.name}' 파이프라인 구동을 시작합니다... 🚀")
+        
+        await pdf_pipeline_chain.ainvoke({
+            "pdf_path": pdf_path,
+            "user_id": user_id,
+            "group_id": group_id,
+            "session": session,
+        })
+        print(f"[Success] 전체 PDF 파이프라인 체인이 에러 없이 완주했습니다! 🎯\n")
+    except Exception as e:
+        print(f"[Error] 파이프라인 수행 중 에러 발생: {e}")
+        raise
