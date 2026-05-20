@@ -21,8 +21,10 @@ gpt_client = openai.AsyncOpenAI()
 def get_priority(meta_data: list, highlighter_ranking: dict, pen_ranking: dict) -> int:
     best = 99
     for cue in meta_data or []:
-        color = cue.get("color") if isinstance(cue, dict) else cue.color
-        cue_type = cue.get("type") if isinstance(cue, dict) else cue.type
+        if not isinstance(cue, dict):
+            continue
+        color = cue.get("color", "")
+        cue_type = cue.get("type", "")
         if cue_type == "highlight":
             rank = highlighter_ranking.get(color, 99)
         elif cue_type == "pen":
@@ -37,8 +39,9 @@ def get_priority(meta_data: list, highlighter_ranking: dict, pen_ranking: dict) 
 # ────────────────────────────────────────
 def get_source_type(meta_data: list) -> str:
     for cue in meta_data or []:
-        cue_type = cue.get("type") if isinstance(cue, dict) else cue.type
-        if cue_type == "pen":
+        if not isinstance(cue, dict):
+            continue
+        if cue.get("type") == "pen":
             return "pen"
     return "highlight"
 
