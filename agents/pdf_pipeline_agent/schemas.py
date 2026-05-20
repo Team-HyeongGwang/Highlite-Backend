@@ -5,25 +5,23 @@ from uuid import UUID, uuid4
 import re
 
 
-class HighlightAnnotation(BaseModel):
-    """형광펜·손필기 메타데이터"""
-    has_handwriting: bool = False
-    has_highlight: bool = False
-    handwriting_content: Optional[str] = None
-    highlight_content: Optional[str] = None
-    handwriting_color: Optional[str] = None
-    highlight_color: Optional[str] = None
-
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, List
+from uuid import UUID, uuid4
 
 class PDFChunk(BaseModel):
-    """RAG agent에 넘기는 단위 청크"""
+    """RAG agent에 넘기는 단위 청크 (계층 구조 제거)"""
     id: UUID = Field(default_factory=uuid4)
+    db_id: Optional[int] = None              # DB 저장 후 할당될 ID
     pdf_name: str
     page: int
     paragraph_index: int
-    content: str                              # 순수 텍스트 ([태그] 제거된)
-    annotation: HighlightAnnotation
-    embedding: Optional[list[float]] = None  # pgvector 저장용
+    content: str                             # 👈 모든 텍스트(본문/형광펜/손글씨)는 무조건 여기에!
+    embedding: Optional[List[float]] = None  # pgvector 저장용
+    
+    # ── 🎨 시각적 속성(메타데이터) ──
+    handwriting_color: Optional[str] = None  # 값이 있으면 "아, content가 손글씨구나!"
+    highlight_color: Optional[str] = None    # 값이 있으면 "아, content가 형광펜이구나!"
 
 
 def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
