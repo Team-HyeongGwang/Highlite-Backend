@@ -233,10 +233,10 @@ async def send_to_importance_agent(input: dict) -> dict:
 
         tasks.append(analyze_chunk_importance(request, session))
         
-        # 2. 🔥 담아둔 모든 중요도 분석 작업을 동시에 병렬(Concurrent)로 실행합니다!
+        # 담아둔 모든 중요도 분석 작업을 동시에 병렬(Concurrent)로 실행
     print(f"\n[Master Pipeline] 총 {len(tasks)}개의 청크 중요도 분석을 동시에 시작합니다... 🚀")
     
-    # asyncio.gather가 모든 대기 작업을 한 번에 쏘고 결과를 다 모아서 가져옵니다.
+    # asyncio.gather가 모든 대기 작업을 한 번에 쏘고 결과를 다 모아서 가져옴
     await asyncio.gather(*tasks)
     
     print(f"[Master Pipeline] 모든 청크의 중요도 분석 및 DB 저장이 완료되었습니다! 🎯")

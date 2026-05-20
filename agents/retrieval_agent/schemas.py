@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field
 from typing import List
-from agents.pdf_pipeline_agent.schemas import PDFChunk
 from common.schemas import VisualCue
 
 from pydantic import BaseModel, Field
