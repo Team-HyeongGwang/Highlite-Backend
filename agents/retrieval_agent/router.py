@@ -13,30 +13,6 @@ router = APIRouter()
 async def test_retrieval():
     return {"message": "RAG 에이전트 라우터 정상 작동 중!"}
 
-# @router.post("/rag-pipeline", response_model=dict)
-# async def run_rag_pipeline(
-#     request: RAGPipelineRequest,
-#     db: AsyncSession = Depends(get_db)
-# ):
-#     """
-#     [RAG Pipeline] PDF 청크를 받아 임베딩하고 DB에 저장한 뒤, 중요도 분석 에이전트로 전달
-#     """
-#     # 1. 체인이 기대하는 dict 형태로 데이터 구성 (FastAPI가 받아온 db 세션 주입)
-#     chain_input = {
-#         "chunks": request.chunks,
-#         "document_id": request.document_id,
-#         "session": db
-#     }
-    
-#     try:
-#         # 2. 체인 실행! (이때 추가해두신 print 로그들이 터미널에 찍힙니다)
-#         await rag_chain.ainvoke(chain_input)
-        
-#         return {"status": "success", "message": f"{len(request.chunks)}개의 청크 처리 완료"}
-    
-#     except Exception as e:
-#         return {"status": "error", "message": str(e)}
-
 @router.post("/upload-pdf")
 async def upload_and_process_pdf(
     file: UploadFile = File(..., description="처리할 PDF 파일을 업로드하세요"),
