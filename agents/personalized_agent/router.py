@@ -3,9 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from agents.personalized_agent.schemas import AnswerSubmissionRequest, PersonalizationResponse
-
-# 💡 폴더명과 파일명이 겹쳐 발생한 ImportError를 방지하기 위해 경로를 명확히 명시하고 함수를 직접 가져옵니다.
-from agents.personalized_agent.personalized_agent import record_quiz_session, analyze_weakness
+from agents.personalized_agent.service import record_quiz_session, analyze_weakness
 
 router = APIRouter()
 
@@ -18,7 +16,7 @@ async def test_personalization():
 
 
 # ────────────────────────────────────────
-# 1. 풀이 데이터 세션 통합 기록 엔드포인트
+# 1. 낱개형 데이터를 받아서 묶음형 서비스로 변환해 주는 엔드포인트
 # ────────────────────────────────────────
 @router.post("/submit-session", response_model=bool)
 async def submit_quiz_session(
@@ -26,15 +24,24 @@ async def submit_quiz_session(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # 임포트 방식 변경에 맞춰 바로 함수를 호출합니다.
+        # 스웨거가 보내주는 낱개 데이터(req.group_id 등)를 
+        # 서비스 함수(record_quiz_session) 규격에 맞게 리스트([ ]) 형태로 포장합니다.
+        
+        # 임시 안전 장치: document_id는 테스트용으로 1을 부여합니다.
+        dummy_document_id = 1 
+        
         return await record_quiz_session(
             user_id=req.user_id,
-            document_id=req.document_id,
-            total_questions=req.total_questions,
-            correct_count=req.correct_count,
-            score_percent=req.score_percent,
-            attempt_phase=req.attempt_phase,
-            answers_list=req.answers_list,
+            document_id=dummy_document_id, 
+            total_questions=1,                      # 낱개 제출이므로 총 문제 수 1개
+            correct_count=1 if req.is_correct else 0, # 맞았으면 1개, 틀렸으면 0개
+            score_percent=100 if req.is_correct else 0,
+            attempt_phase="first_attempt",
+            answers_list=[{                         # 가장 중요: 낱개 데이터를 딕셔너리 리스트로 감싸서 전달
+                "question_id": req.question_id,
+                "user_answer": req.user_answer,
+                "is_correct": req.is_correct
+            }],
             db=db
         )
     except Exception as e:
@@ -51,7 +58,6 @@ async def get_weakness_report(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # 임포트 방식 변경에 맞춰 바로 함수를 호출합니다.
         return await analyze_weakness(
             user_id=user_id, 
             group_id=group_id, 
