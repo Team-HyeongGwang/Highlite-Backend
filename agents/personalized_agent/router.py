@@ -28,16 +28,14 @@ async def submit_quiz_session(
         # 서비스 함수(record_quiz_session) 규격에 맞게 리스트([ ]) 형태로 포장합니다.
         
         # 임시 안전 장치: document_id는 테스트용으로 1을 부여합니다.
-        dummy_document_id = 1 
-        
         return await record_quiz_session(
             user_id=req.user_id,
-            document_id=dummy_document_id, 
-            total_questions=1,                      # 낱개 제출이므로 총 문제 수 1개
-            correct_count=1 if req.is_correct else 0, # 맞았으면 1개, 틀렸으면 0개
+            group_id=req.group_id,
+            total_questions=1,
+            correct_count=1 if req.is_correct else 0,
             score_percent=100 if req.is_correct else 0,
             attempt_phase="first_attempt",
-            answers_list=[{                         # 가장 중요: 낱개 데이터를 딕셔너리 리스트로 감싸서 전달
+            answers_list=[{
                 "question_id": req.question_id,
                 "user_answer": req.user_answer,
                 "is_correct": req.is_correct

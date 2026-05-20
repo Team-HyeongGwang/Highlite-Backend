@@ -15,14 +15,21 @@ llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
 # ────────────────────────────────────────
 async def record_quiz_session(
     user_id: int,
-    document_id: int,  # 기획팀 테이블 구조인 단일 document_id를 타겟팅하여 바인딩
+    group_id: str,
     total_questions: int,
     correct_count: int,
     score_percent: int,
-    attempt_phase: str, 
-    answers_list: list, 
+    attempt_phase: str,
+    answers_list: list,
     db: AsyncSession
 ):
+    doc_result = await db.execute(
+        select(Document.id).where(Document.group_id == group_id).limit(1)
+    )
+    document_id = doc_result.scalar()
+    if not document_id:
+        raise ValueError(f"group_id '{group_id}'에 해당하는 문서를 찾을 수 없습니다.")
+
     # 1-1. 기획팀 양식 테이블에 완벽히 매칭
     quiz_master = QuizResult(
         user_id=user_id,

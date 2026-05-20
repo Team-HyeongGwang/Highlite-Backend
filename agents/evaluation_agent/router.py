@@ -9,7 +9,6 @@ from agents.evaluation_agent.schemas import (
 from agents.evaluation_agent.service import review
 
 router = APIRouter(
-    prefix="/evaluation",
     tags=["Evaluation (검수 에이전트)"]
 )
 
