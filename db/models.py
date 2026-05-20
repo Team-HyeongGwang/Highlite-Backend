@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, JSON, ForeignKey, DateTime, Text, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, JSON, ForeignKey, DateTime, Text, Index
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -77,3 +77,42 @@ class Question(Base):
     explanation = Column(Text, nullable=False)
     
     importance_data = relationship("ImportanceResult", back_populates="questions")
+
+class QuizResult(Base):
+    __tablename__ = "quiz_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"))
+    
+    # 💡 시험 점수 및 통계
+    total_questions = Column(Integer, nullable=False, default=0)
+    correct_count = Column(Integer, nullable=False, default=0)
+    score_percent = Column(Integer, nullable=False, default=0) 
+    
+    # 💡 1회차(원본) 풀이인지, N회차(재생성) 풀이인지 추적
+    attempt_phase = Column(String, default="first_attempt") 
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # 관계 설정 (Relationships)
+    answers = relationship("UserAnswer", back_populates="quiz_result", cascade="all, delete-orphan")
+    # owner = relationship("User", back_populates="quiz_results")
+    # document = relationship("Document", back_populates="quiz_results")
+
+
+class UserAnswer(Base):
+    __tablename__ = "user_answers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    quiz_result_id = Column(Integer, ForeignKey("quiz_results.id", ondelete="CASCADE"))
+    question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"))
+    
+    # 💡 유저의 응답 데이터
+    user_answer = Column(Text, nullable=True) # 사용자가 제출한 답 (빈칸/미입력 고려하여 True)
+    is_correct = Column(Boolean, nullable=False, default=False) # AI 재생성을 위한 핵심 O/X 지표
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # 관계 설정 (Relationships)
+    quiz_result = relationship("QuizResult", back_populates="answers")
+    # question = relationship("Question", back_populates="user_answers")
