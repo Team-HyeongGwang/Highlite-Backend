@@ -202,7 +202,7 @@ async def generate_questions_service(
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
-        .where(Document.id == int(request.group_id))
+        .where(Document.group_id == request.group_id)
     )
     rows = (await db.execute(stmt)).all()
 
