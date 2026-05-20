@@ -1,33 +1,126 @@
 
 from typing import List
 import os
+import base64
+import re
+import fitz  # PyMuPDF
+from typing import TypedDict
+from pathlib import Path
+from db.models import Document
 from agents.importance_agent.schemas import ImportanceRequest
+from typing import Optional
 from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableLambda
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import OpenAIEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from db.models import DocumentChunk
 from agents.pdf_pipeline_agent.schemas import PDFChunk
 from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
+from agents.retrieval_agent.service import rag_chain 
 
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Gemini로 바꿀 수도 있음
+llm = ChatOpenAI(
+    model="gpt-4o",
+    temperature=0,
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
 
 embeddings_model = OpenAIEmbeddings(
     model="text-embedding-3-small", # 임베딩 모델 고민 필요
     api_key=OPENAI_API_KEY,
 )
 
-# ── PDFChunk 받아오기 ────────────────────────────────────────
-async def receive_chunks(input: dict) -> dict:
-    chunks = input["chunks"]
-    print(f"[rag_agent] 받은 청크 수: {len(chunks)}")
+# ── DB에 Document 저장 ────────────────────────────────────────
+async def init_document(input_data: dict) -> dict:
+    pdf_path: Path = input_data["pdf_path"]
+    
+    document = Document(
+        user_id=input_data["user_id"],
+        group_id=input_data["group_id"],
+        title=pdf_path.stem,
+        doc_type="combined", 
+    )
+    session: AsyncSession = input_data["session"]
+    session.add(document)
+    await session.flush() 
+    
+    print(f"[1] document 생성 완료 id={document.id}")
+    input_data["document_id"] = document.id  # 상태 추가
+    return input_data
+
+
+
+# ── PDF를 Image로 변환한 뒤 내용 추출 ────────────────────────────────────────
+async def extract_pdf_to_raw(input_data: dict) -> dict:
+    pdf_path: Path = input_data["pdf_path"]
+    doc = fitz.open(str(pdf_path))
+    raw_chunks = []
+
+    for page_num, page in enumerate(doc, start=1):
+        pix = page.get_pixmap(dpi=200)
+        b64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
+
+        response = await llm.ainvoke([
+            SystemMessage(content=(
+                "당신은 문서 텍스트 추출 전문가입니다. "
+                "이미지에서 본문 텍스트를 그대로 추출하고, 문단은 빈 줄(\\n\\n)로 구분해 주세요. "
+                "손필기로 쓰여진 텍스트는 반드시 [손필기: 내용 | 색상: 색깔] 형태로 표시하세요. "
+                "형광펜으로 강조된 텍스트는 반드시 [형광펜: 내용 | 색상: 색깔] 형태로 표시하세요. "
+                "슬라이드 상단/하단의 메타 정보는 추출하지 마세요. 텍스트 외 다른 말은 절대 하지 마세요."
+            )),
+            HumanMessage(content=[
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                },
+                {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."},
+            ]),
+        ])
+
+        page_text = response.content.strip()
+        paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
+
+        for para_idx, content in enumerate(paragraphs, start=1):
+            raw_chunks.append({
+                "page": page_num,
+                "paragraph_index": para_idx,
+                "content": content,
+            })
+
+    doc.close()
+    print(f"[2] PDF 파싱 완료 count={len(raw_chunks)}")
+    input_data["raw_chunks"] = raw_chunks  # 상태 추가
+    return input_data
+
+
+# ── 생 데이터를 PDFChunk로 내용 파싱 ────────────────────────────────────────
+async def process_raw_chunks(input_data: dict) -> dict:
+    raw_chunks = input_data["raw_chunks"]
+    pdf_name = input_data["pdf_path"].stem
+    
+    chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
+    print(f"[3] 청크 변환 완료 count={len(chunks)}")
+    
+    input_data["chunks"] = chunks  # 이제 아래의 rag_chain 단계들이 이 chunks를 소모합니다.
+    return input_data
+
+
+# ── 로깅 단계 ────────────────────────────────────────
+async def receive_chunks(input_data: dict) -> dict:
+    chunks = input_data["chunks"]
+    print(f"\n[rag_agent] 받은 청크 수: {len(chunks)}")
     for chunk in chunks:
         print(f"  - page={chunk.page} para={chunk.paragraph_index} content={chunk.content[:30]}...")
-    return input
+    return input_data
 
 
 # ── 임베딩 계산 ────────────────────────────────────────
@@ -116,8 +209,11 @@ async def send_to_importance_agent(input: dict) -> dict:
 
 
 # ── 체인 조립 ──────────────────────────────────────────
-rag_chain = (
-    RunnableLambda(receive_chunks)
+pdf_pipeline_chain = (
+    RunnableLambda(init_document)
+    | RunnableLambda(extract_pdf_to_raw)
+    | RunnableLambda(process_raw_chunks)
+    | RunnableLambda(receive_chunks)
     | RunnableLambda(embed_chunks)
     | RunnableLambda(save_embeddings_to_db)
     | RunnableLambda(send_to_importance_agent)
