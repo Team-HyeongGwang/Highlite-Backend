@@ -4,7 +4,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from agents.evaluation_agent.schemas import (
     QuestionReviewRequest, QuestionReviewResponse,
-    FeedbackRequest, FeedbackResponse,
 )
 from agents.evaluation_agent.service import review, regenerate_from_feedback
 
