@@ -6,8 +6,7 @@ from agents.evaluation_agent.schemas import (
     QuestionReviewRequest, 
     QuestionReviewResponse,
 )
-# 💡 에러를 냈던 FeedbackRequest 무리를 완벽히 청소하고 쓸 것만 남겼습니다.
-from agents.evaluation_agent.service import review, regenerate_from_feedback
+from agents.evaluation_agent.service import review
 
 router = APIRouter(
     prefix="/evaluation",
