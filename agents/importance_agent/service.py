@@ -67,6 +67,6 @@ async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession)
     )
     
     db.add(db_result)  
-    await db.commit() 
+    # await db.commit() 
     
     return response
