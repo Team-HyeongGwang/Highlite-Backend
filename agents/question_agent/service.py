@@ -159,6 +159,7 @@ async def call_claude(prompt: str) -> dict:
     message = await claude_client.messages.create(
         model="claude-opus-4-5",
         max_tokens=1000,
+        temperature=0.7,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = message.content[0].text
@@ -172,6 +173,7 @@ async def call_gpt(prompt: str) -> dict:
     response = await gpt_client.chat.completions.create(
         model="gpt-4o",
         max_tokens=1000,
+        temperature=0.7,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = response.choices[0].message.content
