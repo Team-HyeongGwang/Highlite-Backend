@@ -22,7 +22,7 @@ from agents.question_agent.schemas import (
 claude_client = anthropic.AsyncAnthropic()
 gpt_client = openai.AsyncOpenAI()
 
-EVALUATION_URL = os.getenv("EVALUATION_URL", "http://127.0.0.1:8000//evaluation/review")
+EVALUATION_URL = os.getenv("EVALUATION_URL", "http://127.0.0.1:8000/evaluation/review")
 
 # ────────────────────────────────────────
 # 순위 결정
