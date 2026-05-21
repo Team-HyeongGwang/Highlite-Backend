@@ -238,6 +238,8 @@ async def send_to_importance_agent(input: dict) -> dict:
     
     # asyncio.gather가 모든 대기 작업을 한 번에 쏘고 결과를 다 모아서 가져옴
     await asyncio.gather(*tasks)
+
+    await session.commit()
     
     print(f"[Master Pipeline] 모든 청크의 중요도 분석 및 DB 저장이 완료되었습니다! 🎯")
         
