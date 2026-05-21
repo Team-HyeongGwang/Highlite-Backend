@@ -8,7 +8,8 @@ import db.models as models
 
 async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession) -> ImportanceResponse:
     """
-    [1타 강사 AI] LLM을 호출하여 청크의 중요도 점수와 키워드를 추출합니다.
+    [1타 강사 AI] 파이썬 파서가 넘겨준 텍스트와 시각 정보를 바탕으로, 
+    오직 중요도 점수 계산과 키워드 추출에만 집중하는 최적화된 LLM 호출 함수입니다.
     """
     
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
@@ -17,7 +18,7 @@ async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession)
     structured_llm = llm.with_structured_output(ImportanceResponse)
     
     system_prompt = """
-    당신은 대학 전공 서적과 학생의 필기 노트를 분석하여 '시험 출제 확률(중요도)'을 0.0에서 10.0 사이의 점수로 평가하는 1타 강사 AI입니다. 
+    당신은 학습자의 교재(교과서, 전공서적, 수험서 등) 및 필기 데이터를 분석하여 '시험 출제 확률 및 핵심 개념(중요도)'을 0.0에서 10.0 사이의 점수로 평가하는 1타 강사 AI 에이전트입니다.    
     
     [핵심 평가 로직: 사용자 가중치 탄력적 적용]
     사용자는 펜과 형광펜의 중요도 순위를 최소 1개에서 최대 3개까지 자유롭게 설정할 수 있습니다. 
