@@ -7,10 +7,15 @@ from agents.question_agent.schemas import (
     QuestionGenerateResponse,
     RegenerateRequest,
     RegenerateResponse,
+    SubmitAnswerRequest,
+    SubmitAnswerResponse,
+    RegenerateFromWrongRequest,
 )
 from agents.question_agent.service import (
     generate_questions_service,
     regenerate_question_service,
+    submit_answers_service,
+    regenerate_from_wrong_service,
 )
 
 router = APIRouter()
@@ -41,5 +46,31 @@ async def regenerate_question(
 
     try:
         return await regenerate_question_service(request, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ────────────────────────────────────────
+# 3. 채점
+# ────────────────────────────────────────
+@router.post("/submit", response_model=SubmitAnswerResponse)
+async def submit_answers(
+    request: SubmitAnswerRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await submit_answers_service(request, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ────────────────────────────────────────
+# 4. 오답 기반 재생성
+# ────────────────────────────────────────
+@router.post("/regenerate-from-wrong", response_model=QuestionGenerateResponse)
+async def regenerate_from_wrong(
+    request: RegenerateFromWrongRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await regenerate_from_wrong_service(request, db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

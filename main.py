@@ -53,12 +53,6 @@ app.include_router(
 )
 
 app.include_router(
-    evaluation_router, 
-    prefix="/evaluation",  
-    tags=["평가 Agent"]
-)
-
-app.include_router(
     personalized_router, 
     prefix="/personalized",  
     tags=["개인화 Agent"]

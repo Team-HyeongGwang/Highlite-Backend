@@ -2,6 +2,9 @@ import random, json, math, asyncio, httpx, anthropic, openai, os
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from db.models import Question, ImportanceResult, DocumentChunk, Document, User
 from agents.question_agent.schemas import (
@@ -10,10 +13,16 @@ from agents.question_agent.schemas import (
     QuestionItem,
     RegenerateRequest,
     RegenerateResponse,
+    SubmitAnswerRequest,
+    SubmitAnswerResponse,
+    AnswerResult,
+    RegenerateFromWrongRequest,
 )
 
 claude_client = anthropic.AsyncAnthropic()
 gpt_client = openai.AsyncOpenAI()
+
+EVALUATION_URL = os.getenv("EVALUATION_URL", "http://127.0.0.1:8000//evaluation/review")
 
 # ────────────────────────────────────────
 # 순위 결정
@@ -194,42 +203,15 @@ async def call_evaluation(
         return response.json()
 
 # ────────────────────────────────────────
-# 1. 문제 생성 서비스
+# 공통 문제 생성 로직
 # ────────────────────────────────────────
-async def generate_questions_service(
-    request: QuestionGenerateRequest,
+async def _generate_questions_from_chunks(
+    group_id: str,
+    chunks_by_priority: dict,
+    question_count: int,
     db: AsyncSession,
-) -> QuestionGenerateResponse:
-
-    stmt = (
-        select(ImportanceResult, DocumentChunk, Document)
-        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
-        .join(Document, DocumentChunk.document_id == Document.id)
-        .where(Document.id == int(request.group_id))
-    )
-    rows = (await db.execute(stmt)).all()
-
-    if not rows:
-        raise ValueError("해당 문서의 중요도 분석 결과가 없습니다.")
-
-    document = rows[0][2]
-    user_q = await db.execute(select(User).where(User.id == document.user_id))
-    user = user_q.scalar_one_or_none()
-
-    highlighter_ranking = user.highlighter_ranking or {}
-    pen_ranking = user.pen_ranking or {}
-
-    chunks_by_priority = {1: [], 2: [], 3: []}
-    for importance, chunk, _ in rows:
-        priority = get_priority(
-            chunk.meta_data or [],
-            highlighter_ranking,
-            pen_ranking,
-        )
-        chunks_by_priority[priority].append((importance, chunk))
-
-    counts = distribute_counts(request.question_count, chunks_by_priority)
-
+) -> List[QuestionItem]:
+    counts = distribute_counts(question_count, chunks_by_priority)
     generated: List[QuestionItem] = []
 
     for priority, target_count in counts.items():
@@ -261,7 +243,7 @@ async def generate_questions_service(
                     continue
                 try:
                     review = await call_evaluation(
-                        group_id=request.group_id,
+                        group_id=group_id,
                         source_chunk_text=chunk.original_text,
                         question_text=result["question_text"],
                         options=result.get("options"),
@@ -276,11 +258,7 @@ async def generate_questions_service(
                 except Exception:
                     continue
 
-            if not candidates:
-                continue
-
             approved = [c for c in candidates if c["review"]["is_approved"]]
-
             if approved:
                 best = max(approved, key=lambda x: x["review"]["quality_score"])
             else:
@@ -306,9 +284,7 @@ async def generate_questions_service(
             db.add(question)
             await db.flush()
 
-            # source_type 결정
             source_type = get_source_type(chunk.meta_data or [])
-
             generated.append(QuestionItem(
                 chunk_id=chunk.id,
                 question_type=question_type,
@@ -316,11 +292,55 @@ async def generate_questions_service(
                 options=result.get("options"),
                 answer=result["answer"],
                 explanation=result["explanation"],
-                question_number=len(generated) + 1,  # 1번부터 순서대로
-                priority=priority,                    # 1/2/3순위
-                source_type=source_type,              # highlight / pen
-                page_number=chunk.page_number,        # 출처 페이지
+                question_number=len(generated) + 1,
+                priority=priority,
+                source_type=source_type,
+                page_number=chunk.page_number,
             ))
+
+    return generated
+
+# ────────────────────────────────────────
+# 1. 문제 생성 서비스
+# ────────────────────────────────────────
+async def generate_questions_service(
+    request: QuestionGenerateRequest,
+    db: AsyncSession,
+) -> QuestionGenerateResponse:
+
+    stmt = (
+        select(ImportanceResult, DocumentChunk, Document)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .join(Document, DocumentChunk.document_id == Document.id)
+        .where(Document.group_id == request.group_id)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    if not rows:
+        raise ValueError("해당 문서의 중요도 분석 결과가 없습니다.")
+
+    document = rows[0][2]
+    user_q = await db.execute(select(User).where(User.id == document.user_id))
+    user = user_q.scalar_one_or_none()
+
+    highlighter_ranking = user.highlighter_ranking or {}
+    pen_ranking = user.pen_ranking or {}
+
+    chunks_by_priority = {1: [], 2: [], 3: []}
+    for importance, chunk, _ in rows:
+        priority = get_priority(
+            chunk.meta_data or [],
+            highlighter_ranking,
+            pen_ranking,
+        )
+        chunks_by_priority[priority].append((importance, chunk))
+
+    generated = await _generate_questions_from_chunks(
+        group_id=request.group_id,
+        chunks_by_priority=chunks_by_priority,
+        question_count=request.question_count,
+        db=db,
+    )
 
     await db.commit()
     return QuestionGenerateResponse(questions=generated)
@@ -360,3 +380,152 @@ async def regenerate_question_service(
         question_type=request.question_type,
         **{k: result[k] for k in ["question_text", "options", "answer", "explanation"]},
     )
+
+# ────────────────────────────────────────
+# 3. 채점 + 저장
+# ────────────────────────────────────────
+async def submit_answers_service(
+    request: SubmitAnswerRequest,
+    db: AsyncSession,
+) -> SubmitAnswerResponse:
+    from db.models import UserAnswer, QuizResult
+
+    results = []
+
+    for item in request.answers:
+        question_id = item["question_id"]
+        submitted = item["submitted_answer"]
+
+        q_result = await db.execute(
+            select(Question).where(Question.id == question_id)
+        )
+        question = q_result.scalar_one_or_none()
+        if not question:
+            continue
+
+        is_correct = (submitted.strip() == question.answer.strip())
+        results.append({
+            "question_id": question_id,
+            "submitted": submitted,
+            "correct_answer": question.answer,
+            "is_correct": is_correct,
+            "explanation": question.explanation,
+        })
+
+    # QuizResult 먼저 저장
+    correct = sum(1 for r in results if r["is_correct"])
+    total = len(results)
+    score_percent = round((correct / total) * 100) if total > 0 else 0
+
+    quiz_result = QuizResult(
+        user_id=request.user_id,
+        document_id=request.document_id,
+        total_questions=total,
+        correct_count=correct,
+        score_percent=score_percent,
+        attempt_phase=request.attempt_phase,
+    )
+    db.add(quiz_result)
+    await db.flush()  # quiz_result.id 받기 위해
+
+    # UserAnswer 저장
+    for r in results:
+        answer = UserAnswer(
+            quiz_result_id=quiz_result.id,
+            question_id=r["question_id"],
+            user_answer=r["submitted"],
+            is_correct=r["is_correct"],
+        )
+        db.add(answer)
+
+    await db.commit()
+
+    return SubmitAnswerResponse(
+        total=total,
+        correct=correct,
+        wrong=total - correct,
+        results=[
+            AnswerResult(
+                question_id=r["question_id"],
+                submitted_answer=r["submitted"],
+                correct_answer=r["correct_answer"],
+                is_correct=r["is_correct"],
+                explanation=r["explanation"],
+            )
+            for r in results
+        ],
+    )
+
+# ────────────────────────────────────────
+# 4. 오답 기반 재생성
+# ────────────────────────────────────────
+async def regenerate_from_wrong_service(
+    request: RegenerateFromWrongRequest,
+    db: AsyncSession,
+) -> QuestionGenerateResponse:
+    from db.models import UserAnswer, QuizResult
+
+    # 1) 해당 유저 + 해당 문서의 오답 question_id 가져오기
+    wrong_stmt = (
+        select(UserAnswer.question_id)
+        .join(QuizResult, UserAnswer.quiz_result_id == QuizResult.id)
+        .where(QuizResult.user_id == request.user_id)
+        .where(QuizResult.document_id == request.document_id)
+        .where(UserAnswer.is_correct == False)
+    )
+    wrong_rows = (await db.execute(wrong_stmt)).all()
+    wrong_question_ids = [r[0] for r in wrong_rows]
+
+    # 2) 오답 chunk_id 가져오기
+    wrong_chunk_ids = set()
+    if wrong_question_ids:
+        stmt = (
+            select(DocumentChunk.id)
+            .join(ImportanceResult, ImportanceResult.chunk_id == DocumentChunk.id)
+            .join(Question, Question.importance_id == ImportanceResult.id)
+            .where(Question.id.in_(wrong_question_ids))
+        )
+        wrong_chunk_rows = (await db.execute(stmt)).all()
+        wrong_chunk_ids = {r[0] for r in wrong_chunk_rows}
+
+    # 3) 전체 chunks 가져오기
+    stmt = (
+        select(ImportanceResult, DocumentChunk, Document)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .join(Document, DocumentChunk.document_id == Document.id)
+        .where(Document.group_id == request.group_id)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    if not rows:
+        raise ValueError("해당 문서의 중요도 분석 결과가 없습니다.")
+
+    # 4) User ranking 가져오기
+    document = rows[0][2]
+    user_q = await db.execute(select(User).where(User.id == document.user_id))
+    user = user_q.scalar_one_or_none()
+    highlighter_ranking = user.highlighter_ranking or {}
+    pen_ranking = user.pen_ranking or {}
+
+    # 5) 오답 chunk는 1순위로 올리기
+    chunks_by_priority = {1: [], 2: [], 3: []}
+    for importance, chunk, _ in rows:
+        if chunk.id in wrong_chunk_ids:
+            priority = 1
+        else:
+            priority = get_priority(
+                chunk.meta_data or [],
+                highlighter_ranking,
+                pen_ranking,
+            )
+        chunks_by_priority[priority].append((importance, chunk))
+
+    generated = await _generate_questions_from_chunks(
+        group_id=request.group_id,
+        chunks_by_priority=chunks_by_priority,
+        question_count=request.question_count,
+        db=db,
+    )
+
+    await db.commit()
+    return QuestionGenerateResponse(questions=generated)

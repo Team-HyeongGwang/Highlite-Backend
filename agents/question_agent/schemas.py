@@ -1,4 +1,3 @@
-# agents/question_agent/schemas.py
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from common.schemas import VisualCue
@@ -38,3 +37,29 @@ class RegenerateResponse(BaseModel):
     options: Optional[Dict[str, str]] = None
     answer: str
     explanation: str
+
+class SubmitAnswerRequest(BaseModel):
+    user_id: int
+    document_id: int  # QuizResult에 필요
+    attempt_phase: str = "first_attempt"
+    answers: List[dict] = Field(..., description="[{question_id: 1, submitted_answer: '②'}, ...]")
+
+
+class AnswerResult(BaseModel):
+    question_id: int
+    submitted_answer: str
+    correct_answer: str
+    is_correct: bool
+    explanation: str
+
+class SubmitAnswerResponse(BaseModel):
+    total: int
+    correct: int
+    wrong: int
+    results: List[AnswerResult]
+
+class RegenerateFromWrongRequest(BaseModel):
+    user_id: int
+    document_id: int
+    group_id: str
+    question_count: int = Field(10, ge=10, le=30)
