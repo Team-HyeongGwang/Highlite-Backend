@@ -8,6 +8,7 @@ class QuestionGenerateRequest(BaseModel):
 
 class QuestionItem(BaseModel):
     chunk_id: int
+    question_id: int = Field(..., description="DB questions 테이블 id")
     question_type: str = Field(..., description="'multiple_choice', 'ox', 'fill_in_the_blank'")
     question_text: str
     options: Optional[Dict[str, str]] = Field(None, description="객관식일 경우 4지선다 보기")

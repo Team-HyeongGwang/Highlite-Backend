@@ -298,6 +298,7 @@ async def _generate_questions_from_chunks(
                 priority=priority,
                 source_type=source_type,
                 page_number=chunk.page_number,
+                question_id=question.id,
             ))
 
     return generated
