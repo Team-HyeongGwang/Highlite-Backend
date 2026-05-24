@@ -61,6 +61,6 @@ class SubmitAnswerResponse(BaseModel):
 
 class RegenerateFromWrongRequest(BaseModel):
     user_id: int
-    document_id: int
-    group_id: str
+    document_id: UUID
+    group_id: UUID
     question_count: int = Field(10, ge=10, le=30)
