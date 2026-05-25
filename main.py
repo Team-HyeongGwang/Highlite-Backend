@@ -14,6 +14,8 @@ from agents.question_agent.router import router as question_router
 from agents.retrieval_agent.router import router as retrieval_router
 from agents.personalized_agent.router import router as personalized_router
 from api.workflow import router as workflow_router
+from ranks.router import router as rank_router
+
 
 # 서버가 켜질 때 자동으로 실행될 준비(시작) 작업을 정의
 @asynccontextmanager
@@ -80,4 +82,10 @@ app.include_router(
     workflow_router, 
     prefix="/api/v1", 
     tags=["Production"]
+)
+
+app.include_router(
+    rank_router,
+    prefix="/rank",
+    tags=["랭킹"]    
 )
