@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from .schemas import RankingRequest
-from .service import create_ranking
+from .service import create_ranking, get_ranking
 
 router = APIRouter()
 
@@ -18,3 +19,45 @@ async def create_rank(
 ):
     await create_ranking(user_id, request, db)
     return {"message": "랭킹 저장 완료"}
+
+
+@router.get("/color-rank")
+async def get_rank(
+    user_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        result = await get_ranking(user_id, db)
+        
+        if result is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "code": 404,
+                    "data": {"message": "Ranking not found"}
+                }
+            )
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "code": 200,
+                "data": {
+                    "user_id": user_id,
+                    "highlighter_ranking": result["highlighter_ranking"],
+                    "pen_ranking": result["pen_ranking"]
+                }
+            }
+        )
+
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "code": 500,
+                "data": {"message": "Internal server error"}
+            }
+        )

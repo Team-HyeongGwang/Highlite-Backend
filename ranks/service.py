@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update
+from sqlalchemy import update, select
 from db.models import User
 from .schemas import RankingRequest
 
@@ -24,3 +24,22 @@ async def create_ranking(
         .values(**values)
     )
     await db.commit()
+
+# 사용자에게 형광펜 및 펜 중요도 순위를 반환
+async def get_ranking(
+    user_id: int,
+    db: AsyncSession
+):
+    result = await db.execute(
+        select(User.highlighter_ranking, User.pen_ranking)
+        .where(User.id == user_id)
+    )
+    row = result.first()
+    
+    if row is None:
+        return None
+        
+    return {
+        "highlighter_ranking": row.highlighter_ranking,
+        "pen_ranking": row.pen_ranking
+    }
