@@ -1,10 +1,8 @@
 
-from typing import List
 import os
 import base64
 import re
 import fitz  # PyMuPDF
-from typing import TypedDict
 import asyncio
 from pathlib import Path
 from db.models import Document
@@ -22,6 +20,7 @@ from db.models import DocumentChunk
 from .schemas import PDFChunk
 from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
+from ranks.service import get_ranking
 
 load_dotenv()
 
@@ -195,12 +194,15 @@ async def save_embeddings_to_db(input: dict) -> dict:
 async def send_to_importance_agent(input: dict) -> dict:
     chunks: list[PDFChunk] = input["chunks"]
     session: AsyncSession = input["session"]
-
-    # TODO: 추후 input dict에서 받아오도록 변경
-    group_id = "default_group"
+    user_id: int = input["user_id"]
+    group_id = input["group_id"]
+    
     doc_type = "pdf"
-    highlighter_ranking = {"yellow": 1, "green": 2, "pink": 3}
-    pen_ranking = {"red": 1, "blue": 2, "black": 3}
+
+    # DB에서 사용자 ranking 조회
+    ranking = await get_ranking(user_id, session)
+    highlighter_ranking = ranking["highlighter_ranking"] if ranking else {}
+    pen_ranking = ranking["pen_ranking"] if ranking else {}
 
     tasks = []
 
