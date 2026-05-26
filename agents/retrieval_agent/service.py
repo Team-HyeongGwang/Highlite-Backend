@@ -3,8 +3,6 @@ import os
 import base64
 import re
 import fitz  # PyMuPDF
-import uuid
-from typing import TypedDict
 import asyncio
 from pathlib import Path
 from db.models import Document
@@ -41,7 +39,7 @@ embeddings_model = OpenAIEmbeddings(
 )
 
 # ── PDF 청크 파싱 ────────────────────────────────────────
-def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
+def parse_chunk(raw: dict) -> PDFChunk:
     raw_content = raw["content"]
 
     def extract_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
@@ -50,22 +48,33 @@ def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
             return match.group(1).strip(), match.group(2).strip() if match.group(2) else None
         return None, None
 
+    def has_tag(tag: str) -> bool:
+        return bool(re.search(rf"\[{tag}: .+?\]", raw_content))
+
     handwriting, handwriting_color = extract_tag("손필기")
     highlight, highlight_color = extract_tag("형광펜")
+    is_underline = has_tag("밑줄")
+    is_circled = has_tag("강조")
+    is_image = has_tag("이미지")
 
-    clean_content = re.sub(r"\[(손필기|형광펜): .+?\]", "", raw_content).strip()
+    clean_content = re.sub(r"\[(손필기|형광펜|밑줄|강조|이미지): .+?\]", "", raw_content).strip()
 
-    final_content = clean_content
-    if not final_content:
-        final_content = handwriting or highlight or ""
+    # 이미지는 설명문을 content로 사용
+    if is_image:
+        image_match = re.search(r"\[이미지: (.+?)\]", raw_content)
+        final_content = image_match.group(1).strip() if image_match else ""
+    else:
+        final_content = clean_content or handwriting or highlight or ""
 
     return PDFChunk(
-        pdf_name=pdf_name,
         page=raw["page"],
         paragraph_index=raw["paragraph_index"],
         content=final_content,
         handwriting_color=handwriting_color,
         highlight_color=highlight_color,
+        is_underline=is_underline,
+        is_circled=is_circled,
+        is_image=is_image,
     )
 
 
@@ -84,7 +93,7 @@ async def init_document(input_data: dict) -> dict:
     await session.flush() 
     
     print(f"[1] document 생성 완료 id={document.id}")
-    input_data["document_id"] = document.id
+    input_data["document_id"] = document.id  # 상태 추가
     return input_data
 
 
@@ -100,14 +109,35 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
         b64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
 
         response = await llm.ainvoke([
-            SystemMessage(content=(
-                "당신은 문서 텍스트 추출 전문가입니다. "
-                "이미지에서 본문 텍스트를 그대로 추출하고, 문단은 빈 줄(\\n\\n)로 구분해 주세요. "
-                "손필기로 쓰여진 텍스트는 반드시 [손필기: 내용 | 색상: 색깔] 형태로 표시하세요. "
-                "형광펜으로 강조된 텍스트는 반드시 [형광펜: 내용 | 색상: 색깔] 형태로 표시하세요. "
-                "슬라이드 상단/하단의 메타 정보는 추출하지 마세요. 텍스트 외 다른 말은 절대 하지 마세요."
-            )),
-            HumanMessage(content=[
+        SystemMessage(content=(
+            "당신은 학습 교재 분석 전문가입니다. "
+            "이 미지에서 모든 텍스트와 시각 정보를 빠짐없이 추출하세요. "
+            "슬라이드 상단/하단의 메타 정보는 추출하지 마세요. 텍스트 외 다른 말은 절대 하지 마세요."
+            "\n\n"
+
+            "[텍스트 추출 규칙]\n"
+            "1. 문단은 빈 줄(\\n\\n)로 구분하세요.\n"
+            "2. 목록(bullet/번호)은 각 항목을 개별 문단으로 분리하세요. 하위 항목도 각각 독립된 문단으로 분리하세요.\n"
+            "   예시:\n"
+            "   * 상위 항목\n"
+            "      * 하위 항목1\n"
+            "      * 하위 항목2\n"
+            "   → '상위 항목', '하위 항목1', '하위 항목2'를 각각 별도 문단으로 추출\n"
+            "\n"
+    
+            "[시각 정보 추출 규칙]\n"
+            "3. 형광펜으로 강조된 텍스트: [형광펜: 내용 | 색상: 색깔]\n"
+            "4. 손필기로 쓰여진 텍스트: [손필기: 내용 | 색상: 색깔]\n"
+            "5. 밑줄 표시된 텍스트: [밑줄: 내용]\n"
+            "6. 동그라미/박스 표시된 텍스트: [강조: 내용]\n"
+            "\n"
+            
+            "[이미지/도표 처리 규칙]\n"
+            "7. 텍스트가 아닌 이미지, 그림, 도표, 그래프가 있으면 반드시 아래 형식으로 설명하세요:\n"
+            "   [이미지: 해당 이미지에 대한 상세 설명]\n"
+        "   예시: [이미지: 세포 분열 과정을 나타낸 그림으로, 좌측부터 간기, 분열기, 말기 순서로 표현됨]\n"
+        )),
+        HumanMessage(content=[
                 {
                     "type": "image",
                     "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
@@ -135,9 +165,8 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
 # ── 생 데이터를 PDFChunk로 내용 파싱 ────────────────────────────────────────
 async def process_raw_chunks(input_data: dict) -> dict:
     raw_chunks = input_data["raw_chunks"]
-    pdf_name = input_data["pdf_path"].stem
     
-    chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
+    chunks = [parse_chunk(raw) for raw in raw_chunks]
     print(f"[3] 청크 변환 완료 count={len(chunks)}")
     
     input_data["chunks"] = chunks  # 이제 아래의 rag_chain 단계들이 이 chunks를 소모합니다.
@@ -178,10 +207,12 @@ async def save_embeddings_to_db(input: dict) -> dict:
             original_text=chunk.content,
             embedding=chunk.embedding,
             meta_data={
-                "pdf_name": chunk.pdf_name,
                 "paragraph_index": chunk.paragraph_index,
                 "handwriting_color": chunk.handwriting_color,
                 "highlight_color": chunk.highlight_color,
+                "is_underline": chunk.is_underline,
+                "is_circled": chunk.is_circled,
+                "is_image": chunk.is_image,
             },
         )
         
@@ -197,7 +228,7 @@ async def send_to_importance_agent(input: dict) -> dict:
     chunks: list[PDFChunk] = input["chunks"]
     session: AsyncSession = input["session"]
     user_id: int = input["user_id"]
-    group_id = input["group_id"]
+    group_id = str(input["group_id"])
     
     doc_type = "pdf"
 
@@ -271,15 +302,13 @@ async def run_pdf_pipeline(
     try:
         print(f"\n[Master Pipeline] '{pdf_path.name}' 파이프라인 구동을 시작합니다... 🚀")
         
-        result = await pdf_pipeline_chain.ainvoke({
+        await pdf_pipeline_chain.ainvoke({
             "pdf_path": pdf_path,
             "user_id": user_id,
             "group_id": group_id,
             "session": session,
         })
-
         print(f"[Success] 전체 PDF 파이프라인 체인이 에러 없이 완주했습니다! 🎯\n")
-        return [result["document_id"]] # Response JSON에 출력 결과 담음
     except Exception as e:
         print(f"[Error] 파이프라인 수행 중 에러 발생: {e}")
         raise
