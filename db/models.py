@@ -8,7 +8,12 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, nullable=False)
+    provider = Column(String, default="local")  # 예: "google", "kakao", "naver"
+    profile_image_url = Column(String, nullable=True)
+    join_date = Column(DateTime(timezone=True), server_default=func.now())
+    
     highlighter_ranking = Column(JSON, nullable=True) 
     pen_ranking = Column(JSON, nullable=True)         
 
