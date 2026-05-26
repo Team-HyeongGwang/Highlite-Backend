@@ -50,9 +50,8 @@ def create_access_token(data: dict):
 # 구글 로그인 창으로 보내는 API
 @router.get("/login/google")
 async def login_via_google(request: Request):
-    # 구글 로그인 성공 후 돌아올 백엔드 주소
     redirect_uri = "http://localhost:8000/users/login/google/callback"
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    return await oauth.google.authorize_redirect(request, redirect_uri, prompt="select_account")
 
 def generate_random_nickname():
     adjectives = ["열공하는", "졸린", "행복한", "코딩하는", "똑똑한", "신비로운", "빛나는", "용감한", "귀여운", "멋진", "재미있는", "창의적인", "친절한", "유쾌한", "상냥한", "똑부러지는", "센스있는", "사려깊은", "낙천적인", "열정적인", "차분한", "긍정적인", "낭만적인", "섬세한", "지혜로운", "활발한", "사랑스러운", "유머러스한"]
