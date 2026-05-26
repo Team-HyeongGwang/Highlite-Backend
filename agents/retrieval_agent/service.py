@@ -1,13 +1,11 @@
 
 import os
 import base64
-import re
 import fitz  # PyMuPDF
 import asyncio
 from pathlib import Path
 from db.models import Document
 from agents.importance_agent.schemas import ImportanceRequest
-from typing import Optional
 from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableLambda
@@ -17,10 +15,12 @@ from langchain_openai import OpenAIEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import DocumentChunk
-from .schemas import PDFChunk
+from .schemas import PDFChunk, PageOutput
 from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
 from ranks.service import get_ranking
+
+from typing import List
 
 load_dotenv()
 
@@ -37,110 +37,6 @@ embeddings_model = OpenAIEmbeddings(
     model="text-embedding-3-small", # 임베딩 모델 고민 필요
     api_key=OPENAI_API_KEY,
 )
-
-# ── LLM 출력 → raw dict 분리 ────────────────────────────────────
-def split_into_raws(llm_output: str, page: int) -> list[dict]:
-    raws = []
-    paragraph_index = 0
-    cluster_counter = 0
-    in_group = False
-    current_cluster: Optional[str] = None
-    group_buffer = []
-
-    lines = llm_output.strip().split("\n")
-
-    for line in lines:
-        stripped = line.strip()
-
-        if re.search(r"\[그룹\s*시작\]", stripped):
-            in_group = True
-            cluster_counter += 1
-            current_cluster = f"p{page}_c{cluster_counter}"
-            group_buffer = []
-
-        elif re.search(r"\[그룹\s*끝\]", stripped):
-            for chunk_line in group_buffer:
-                if chunk_line.strip():
-                    raws.append({
-                        "page": page,
-                        "paragraph_index": paragraph_index,
-                        "chunk_cluster": current_cluster,
-                        "content": chunk_line.strip(),
-                    })
-                    paragraph_index += 1
-            in_group = False
-            current_cluster = None
-            group_buffer = []
-
-        elif in_group:
-            if stripped:
-                group_buffer.append(stripped)
-
-        else:
-            if stripped:
-                raws.append({
-                    "page": page,
-                    "paragraph_index": paragraph_index,
-                    "chunk_cluster": None,
-                    "content": stripped,
-                })
-                paragraph_index += 1
-
-    return raws
-
-
-# ── PDF 청크 파싱 ────────────────────────────────────────
-def parse_chunk(raw: dict) -> PDFChunk:
-    raw_content = raw["content"]
-
-    def extract_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
-        match = re.search(rf"\[{tag}: (.+?)(?:\s*\|\s*색상:\s*(.+?))?\]", raw_content)
-        if match:
-            return match.group(1).strip(), match.group(2).strip() if match.group(2) else None
-        return None, None
-
-    def has_tag(tag: str) -> bool:
-        return bool(re.search(rf"\[{tag}: .+?\]", raw_content))
-
-    handwriting, handwriting_color = extract_tag("손필기")
-    highlight, highlight_color = extract_tag("형광펜")
-    is_underline = has_tag("밑줄")
-    is_circled = has_tag("강조")
-    is_image = has_tag("이미지")
-
-    clean_content = re.sub(r"\[(손필기|형광펜|밑줄|강조|이미지): .+?\]", "", raw_content).strip()
-
-    # 이미지는 설명문을 content로 사용
-    if is_image:
-        image_match = re.search(r"\[이미지: (.+?)\]", raw_content)
-        final_content = image_match.group(1).strip() if image_match else "" 
-    else:
-        clean_content = re.sub(r"\[(손필기|형광펜|밑줄|강조|이미지): .+?\]", "", raw_content).strip()
-    
-    # 밑줄/강조도 fallback으로 추가
-    underline_match = re.search(r"\[밑줄: (.+?)\]", raw_content)
-    circle_match = re.search(r"\[강조: (.+?)\]", raw_content)
-    
-    final_content = (
-        clean_content
-        or handwriting
-        or highlight
-        or (underline_match.group(1).strip() if underline_match else None)
-        or (circle_match.group(1).strip() if circle_match else None)
-        or ""
-    )
-
-    return PDFChunk(
-        page=raw["page"],
-        paragraph_index=raw["paragraph_index"],
-        content=final_content,
-        handwriting_color=handwriting_color,
-        highlight_color=highlight_color,
-        is_underline=is_underline,
-        is_circled=is_circled,
-        is_image=is_image,
-    )
-
 
 # ── DB에 Document 저장 ────────────────────────────────────────
 async def init_document(input_data: dict) -> dict:
@@ -160,7 +56,23 @@ async def init_document(input_data: dict) -> dict:
     input_data["document_id"] = document.id  # 상태 추가
     return input_data
 
-
+# ── PageOutput → PDFChunk 리스트 변환 ─────────────────────────
+def to_pdf_chunks(page_num: int, page_output: PageOutput) -> List[PDFChunk]:
+    chunks = []
+    
+    for paragraph_index, chunk in enumerate(page_output.chunks):
+        chunks.append(PDFChunk(
+            page=page_num,
+            paragraph_index=paragraph_index,
+            content=chunk.content,
+            handwriting_color=chunk.handwriting_color,
+            highlight_color=chunk.highlight_color,
+            is_underline=chunk.is_underline,
+            is_circled=chunk.is_circled,
+            is_image=chunk.is_image,
+        ))
+        
+    return chunks
 
 # ── PDF를 Image로 변환한 뒤 내용 추출 ────────────────────────────────────────
 async def extract_pdf_to_raw(input_data: dict) -> dict:
@@ -168,84 +80,62 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
     doc = fitz.open(str(pdf_path))
     raw_chunks = []
 
+    structured_llm = llm.with_structured_output(PageOutput)
+
     for page_num, page in enumerate(doc, start=1):
         pix = page.get_pixmap(dpi=200)
         b64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
+        
+        page_output: PageOutput = await structured_llm.ainvoke([
+            SystemMessage(content=(
+                "당신은 강의 자료를 분석하는 AI입니다.\n\n"
+                
+                "[가장 중요한 지시사항]\n"
+                "   - 텍스트 추출 전, 가장 먼저 슬라이드의 전체적인 맥락과 구성, 전체 흐름을 이해하세요.\n"
+                "   - 해당 단계에서 이해한 슬라이드의 맥락, 구성을 청킹과 텍스트, 이미지 처리에서도 사용하세요.\n"
+                "   - 해당 과정을 진행하면서, 스스로가 어떠한 과정을 거쳤는지에 대한 내용을 적지마세요. (ex: 반성중)"
+                "   - 슬라이드의 전체 흐름을 이해하되, 슬라이드 내 정보만을 활용하세요.\n"
 
-        response = await llm.ainvoke([
-        SystemMessage(content=(
-            "당신은 학습 교재 분석 전문가입니다. "
-            "이 미지에서 모든 텍스트와 시각 정보를 빠짐없이 추출하세요. "
-            "슬라이드 상단/하단의 메타 정보는 추출하지 마세요. 텍스트 외 다른 말은 절대 하지 마세요."
-            "\n\n"
+                "1. 청킹(Chunking)\n"
+                "   - 청킹 전에 앞서 정리했던 슬라이드의 맥락, 구성을 활용하세요.\n"
+                "   - 적당히 문단 단위로 진행하세요.\n"
+                "   - 단어 단위나 너무 짧은 줄 단위로 잘게 끊지 마세요. 문맥이 이어지는 한 덩어리로 묶어주세요.\n"
+                "   - 제목란과 본문란을 구분하세요.\n"
+                "   - 슬라이드 상하단의 페이지 번호, 강의명 같은 불필요한 정보는 버리세요.\n\n"
 
-            "[텍스트 추출 규칙]\n"
-            "1. 문단은 빈 줄(\\n\\n)로 구분하세요.\n"
-            "2. 목록(bullet/번호)은 각 항목을 개별 문단으로 분리하세요. 하위 항목도 각각 독립된 문단으로 분리하세요.\n"
-            "   예시:\n"
-            "   * 상위 항목\n"
-            "      * 하위 항목1\n"
-            "      * 하위 항목2\n"
-            "   → '상위 항목', '하위 항목1', '하위 항목2'를 각각 별도 문단으로 추출\n"
-            "\n"
-    
-            "[시각 정보 추출 규칙]\n"
-            "3. 형광펜으로 강조된 텍스트: [형광펜: 내용 | 색상: 색깔]\n"
-            "4. 손필기로 쓰여진 텍스트: [손필기: 내용 | 색상: 색깔]\n"
-            "5. 밑줄 표시된 텍스트: [밑줄: 내용]\n"
-            "6. 동그라미/박스 표시된 텍스트: [강조: 내용]\n"
-            "\n"
-            
-            "[이미지/도표 처리 규칙]\n"
-            "7. 텍스트가 아닌 이미지, 그림, 도표, 그래프가 있으면 반드시 아래 형식으로 설명하세요:\n"
-            "   [이미지: 해당 이미지에 대한 상세 설명]\n"
-            " 예시: [이미지: 세포 분열 과정을 나타낸 그림으로, 좌측부터 간기, 분열기, 말기 순서로 표현됨]\n"
-
-            "[시각 정보 그룹핑 규칙]\n"
-            "8. 손필기, 형광펜, 밑줄, 강조가 어떤 텍스트나 이미지에 대한 것인지 의미적으로 판단하세요.\n"
-            "   연관된 요소들은 반드시 [그룹 시작] ~ [그룹 끝]으로 묶어서 출력하세요.\n"
-            "   형식:\n"
-            "   [그룹 시작]\n"
-            "   원문 텍스트 또는 [이미지: 설명]\n"
-            "   [손필기: 내용 | 색상: 색깔]\n"
-            "   [그룹 끝]\n"
-            "\n"
-            "9. 어떤 내용과도 연관짓기 어려운 단독 요소는 그룹 없이 그대로 출력하세요.\n"
-            "10. 이미지/텍스트 위에 필기가 있으면 절대 별도 문단으로 분리하지 마세요.\n"
-        )),
-        HumanMessage(content=[
+                "2. 텍스트와 이미지, 필기를 자연스럽게 처리하세요.\n"
+                "   - 청킹 전에 앞서 정리했던 슬라이드의 맥락, 구성을 활용하세요.\n"
+                "   - [텍스트]: '실제로 적혀있는 글씨'만 그대로 가져와서 'content'에 적습니다.\n"
+                "   - [이미지]: 'is_image=true'로 설정하고, 이미지의 객관적인 사실만 'content'에 설명합니다.\n"
+                "   - [도표/이미지 속 글자]: 그림이나 도표(그래프, 다이어그램 등) '안에' 포함된 글씨들은 절대 개별 텍스트 청크로 분리해서 따로 빼내지 마세요!!\n"
+                "   - [도표/이미지 주변, 속 손필기나 형광펜]: 이미지의 객관적 사실과 함께 손필기나 형광펜으로 강조된 내용을 엮어서 'content'에 포함시킵니다.\n"
+                "   - [필기/형광펜]: 메타데이터 플래그를 켭니다.\n"
+                "   - [필기 색상]: 형광펜과 필기 색깔이 겹쳐있는 경우에는 둘을 분리하여 인식하세요.\n"
+            )),
+                        HumanMessage(content=[
                 {
                     "type": "image",
                     "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
                 },
-                {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."},
+                {"type": "text", "text": "슬라이드 내용을 추출해 주세요."},
             ]),
         ])
 
-        page_text = response.content.strip()
-        paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
 
-        for para_idx, content in enumerate(paragraphs, start=1):
-            raw_chunks.append({
-                "page": page_num,
-                "paragraph_index": para_idx,
-                "content": content,
-            })
+        raw_chunks.extend(to_pdf_chunks(page_num, page_output))
+
 
     doc.close()
     print(f"[2] PDF 파싱 완료 count={len(raw_chunks)}")
-    input_data["raw_chunks"] = raw_chunks  # 상태 추가
+    input_data["chunks"] = raw_chunks
     return input_data
 
 
 # ── 생 데이터를 PDFChunk로 내용 파싱 ────────────────────────────────────────
 async def process_raw_chunks(input_data: dict) -> dict:
-    raw_chunks = input_data["raw_chunks"]
-    
-    chunks = [parse_chunk(raw) for raw in raw_chunks]
+    chunks = input_data["raw_chunks"]  # PDFChunk 타입 
     print(f"[3] 청크 변환 완료 count={len(chunks)}")
-    
-    input_data["chunks"] = chunks  # 이제 아래의 rag_chain 단계들이 이 chunks를 소모합니다.
+    input_data["chunks"] = chunks
     return input_data
 
 
@@ -289,7 +179,7 @@ async def save_embeddings_to_db(input: dict) -> dict:
                 "is_underline": chunk.is_underline,
                 "is_circled": chunk.is_circled,
                 "is_image": chunk.is_image,
-            },
+},
         )
         
         session.add(db_chunk)
@@ -361,7 +251,6 @@ async def send_to_importance_agent(input: dict) -> dict:
 pdf_pipeline_chain = (
     RunnableLambda(init_document)
     | RunnableLambda(extract_pdf_to_raw)
-    | RunnableLambda(process_raw_chunks)
     | RunnableLambda(receive_chunks)
     | RunnableLambda(embed_chunks)
     | RunnableLambda(save_embeddings_to_db)

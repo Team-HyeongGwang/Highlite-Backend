@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Literal, Optional
 from common.schemas import VisualCue
 
 from pydantic import BaseModel, Field
@@ -13,7 +13,6 @@ class PDFChunk(BaseModel):
     db_id: Optional[int] = None              # DB 저장 후 할당될 ID
     page: int
     paragraph_index: int
-    chunk_cluster: Optional[str] = None      # 추가: 페이지 내 의미 단위 묶음
     content: str                             # 모든 텍스트(본문/형광펜/손글씨)는 무조건 여기
     embedding: Optional[List[float]] = None  # pgvector 저장용
 
@@ -51,3 +50,14 @@ class BatchRetrievalResponse(BaseModel):
 class RAGPipelineRequest(BaseModel):
     document_id: int
     chunks: List[PDFChunk]
+
+class ExtractedChunk(BaseModel):
+    content: str = Field(description="문단 단위의 텍스트 내용 또는 이미지 설명. (필기가 부가 설명이면 여기에 자연스럽게 포함)")
+    handwriting_color: Optional[str] = Field(default=None, description="손필기 색상 (예: red, blue). 없으면 null")
+    highlight_color: Optional[str] = Field(default=None, description="형광펜 색상 (예: yellow). 없으면 null")
+    is_underline: bool = Field(default=False, description="밑줄 여부")
+    is_circled: bool = Field(default=False, description="동그라미/박스 표시 여부")
+    is_image: bool = Field(default=False, description="이 청크가 이미지/도표인지 여부")
+
+class PageOutput(BaseModel):
+    chunks: List[ExtractedChunk] = Field(description="페이지에서 추출된 청크 목록")
