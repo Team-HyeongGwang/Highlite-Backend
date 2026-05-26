@@ -3,6 +3,8 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 from db.database import Base
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
 
 class User(Base):
     __tablename__ = "users"
@@ -17,9 +19,9 @@ class User(Base):
 class Document(Base):
     __tablename__ = "documents"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    group_id = Column(String, index=True, nullable=False)  
+    group_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     title = Column(String, nullable=False)
     doc_type = Column(String, server_default='combined')
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -31,7 +33,7 @@ class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"))
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
     page_number = Column(Integer)
     original_text = Column(Text, nullable=False)
     meta_data = Column(JSON, nullable=True) 
@@ -83,7 +85,7 @@ class QuizResult(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"))
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
     
     # 💡 시험 점수 및 통계
     total_questions = Column(Integer, nullable=False, default=0)

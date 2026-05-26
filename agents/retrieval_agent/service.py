@@ -3,6 +3,8 @@ import os
 import base64
 import re
 import fitz  # PyMuPDF
+import uuid
+from typing import TypedDict
 import asyncio
 from pathlib import Path
 from db.models import Document
@@ -82,7 +84,7 @@ async def init_document(input_data: dict) -> dict:
     await session.flush() 
     
     print(f"[1] document 생성 완료 id={document.id}")
-    input_data["document_id"] = document.id  # 상태 추가
+    input_data["document_id"] = document.id
     return input_data
 
 
@@ -269,13 +271,15 @@ async def run_pdf_pipeline(
     try:
         print(f"\n[Master Pipeline] '{pdf_path.name}' 파이프라인 구동을 시작합니다... 🚀")
         
-        await pdf_pipeline_chain.ainvoke({
+        result = await pdf_pipeline_chain.ainvoke({
             "pdf_path": pdf_path,
             "user_id": user_id,
             "group_id": group_id,
             "session": session,
         })
+
         print(f"[Success] 전체 PDF 파이프라인 체인이 에러 없이 완주했습니다! 🎯\n")
+        return [result["document_id"]] # Response JSON에 출력 결과 담음
     except Exception as e:
         print(f"[Error] 파이프라인 수행 중 에러 발생: {e}")
         raise
