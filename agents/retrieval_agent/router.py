@@ -1,4 +1,5 @@
 import shutil
+import uuid
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pathlib import Path
@@ -17,7 +18,6 @@ async def test_retrieval():
 async def upload_and_process_pdf(
     file: UploadFile = File(..., description="처리할 PDF 파일을 업로드하세요"),
     user_id: int = Form(..., description="사용자 ID"),
-    group_id: str = Form(..., description="그룹 ID"),
     db: AsyncSession = Depends(get_db)
 ):
     if not file.filename.lower().endswith(".pdf"):
@@ -27,29 +27,35 @@ async def upload_and_process_pdf(
     upload_dir.mkdir(parents=True, exist_ok=True)
     
     pdf_path = upload_dir / file.filename
+    group_id = uuid.uuid4() 
+
     try:
         with pdf_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
-        print(f"\n[Router] 파일 임시 저장 성공: {pdf_path}")
 
-        # 🔥 이름이 변경된 마스터 파이프라인 가동!
-        await run_pdf_pipeline(
+        document_ids = await run_pdf_pipeline( 
             pdf_path=pdf_path,
             user_id=user_id,
             group_id=group_id,
             session=db
         )
-        
+
         return {
-            "status": "success", 
-            "message": f"'{file.filename}' 파일이 마스터 파이프라인을 완벽하게 통과했습니다! 🎯"
+            "status": "success",
+            "group_id": str(group_id),  # uuid 직렬화 에러 방지
+            "code": 200,
+            "documents": [{"document_id": str(doc_id)} for doc_id in document_ids],  # uuid 직렬화 에러 방지
+            "message": f"'{file.filename}' : Documents uploaded and saved successfully"
         }
 
     except Exception as e:
         print(f"[Router Error] 파이프라인 중단됨: {e}")
-        raise HTTPException(status_code=500, detail=f"파이프라인 처리 중 에러 발생: {str(e)}")
-        
+        return {
+            "status": "error",
+            "code": 500,
+            "message": "Failed to save document"
+        }
+
     finally:
         if pdf_path.exists():
             pdf_path.unlink()

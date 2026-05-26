@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from common.schemas import VisualCue
+from uuid import UUID
 
 class QuestionGenerateRequest(BaseModel):
     group_id: str = Field(..., description="문제를 출제할 문서 세트 ID")
@@ -40,7 +41,7 @@ class RegenerateResponse(BaseModel):
 
 class SubmitAnswerRequest(BaseModel):
     user_id: int
-    document_id: int  # QuizResult에 필요
+    document_id: UUID  # QuizResult에 필요
     attempt_phase: str = "first_attempt"
     answers: List[dict] = Field(..., description="[{question_id: 1, submitted_answer: '②'}, ...]")
 
@@ -60,6 +61,6 @@ class SubmitAnswerResponse(BaseModel):
 
 class RegenerateFromWrongRequest(BaseModel):
     user_id: int
-    document_id: int
-    group_id: str
+    document_id: UUID
+    group_id: UUID
     question_count: int = Field(10, ge=10, le=30)
