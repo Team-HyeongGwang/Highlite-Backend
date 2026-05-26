@@ -38,6 +38,57 @@ embeddings_model = OpenAIEmbeddings(
     api_key=OPENAI_API_KEY,
 )
 
+# ── LLM 출력 → raw dict 분리 ────────────────────────────────────
+def split_into_raws(llm_output: str, page: int) -> list[dict]:
+    raws = []
+    paragraph_index = 0
+    cluster_counter = 0
+    in_group = False
+    current_cluster: Optional[str] = None
+    group_buffer = []
+
+    lines = llm_output.strip().split("\n")
+
+    for line in lines:
+        stripped = line.strip()
+
+        if re.search(r"\[그룹\s*시작\]", stripped):
+            in_group = True
+            cluster_counter += 1
+            current_cluster = f"p{page}_c{cluster_counter}"
+            group_buffer = []
+
+        elif re.search(r"\[그룹\s*끝\]", stripped):
+            for chunk_line in group_buffer:
+                if chunk_line.strip():
+                    raws.append({
+                        "page": page,
+                        "paragraph_index": paragraph_index,
+                        "chunk_cluster": current_cluster,
+                        "content": chunk_line.strip(),
+                    })
+                    paragraph_index += 1
+            in_group = False
+            current_cluster = None
+            group_buffer = []
+
+        elif in_group:
+            if stripped:
+                group_buffer.append(stripped)
+
+        else:
+            if stripped:
+                raws.append({
+                    "page": page,
+                    "paragraph_index": paragraph_index,
+                    "chunk_cluster": None,
+                    "content": stripped,
+                })
+                paragraph_index += 1
+
+    return raws
+
+
 # ── PDF 청크 파싱 ────────────────────────────────────────
 def parse_chunk(raw: dict) -> PDFChunk:
     raw_content = raw["content"]
@@ -62,9 +113,22 @@ def parse_chunk(raw: dict) -> PDFChunk:
     # 이미지는 설명문을 content로 사용
     if is_image:
         image_match = re.search(r"\[이미지: (.+?)\]", raw_content)
-        final_content = image_match.group(1).strip() if image_match else ""
+        final_content = image_match.group(1).strip() if image_match else "" 
     else:
-        final_content = clean_content or handwriting or highlight or ""
+        clean_content = re.sub(r"\[(손필기|형광펜|밑줄|강조|이미지): .+?\]", "", raw_content).strip()
+    
+    # 밑줄/강조도 fallback으로 추가
+    underline_match = re.search(r"\[밑줄: (.+?)\]", raw_content)
+    circle_match = re.search(r"\[강조: (.+?)\]", raw_content)
+    
+    final_content = (
+        clean_content
+        or handwriting
+        or highlight
+        or (underline_match.group(1).strip() if underline_match else None)
+        or (circle_match.group(1).strip() if circle_match else None)
+        or ""
+    )
 
     return PDFChunk(
         page=raw["page"],
@@ -135,7 +199,19 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
             "[이미지/도표 처리 규칙]\n"
             "7. 텍스트가 아닌 이미지, 그림, 도표, 그래프가 있으면 반드시 아래 형식으로 설명하세요:\n"
             "   [이미지: 해당 이미지에 대한 상세 설명]\n"
-        "   예시: [이미지: 세포 분열 과정을 나타낸 그림으로, 좌측부터 간기, 분열기, 말기 순서로 표현됨]\n"
+            " 예시: [이미지: 세포 분열 과정을 나타낸 그림으로, 좌측부터 간기, 분열기, 말기 순서로 표현됨]\n"
+
+            "[시각 정보 그룹핑 규칙]\n"
+            "8. 손필기, 형광펜, 밑줄, 강조가 어떤 텍스트나 이미지에 대한 것인지 의미적으로 판단하세요.\n"
+            "   연관된 요소들은 반드시 [그룹 시작] ~ [그룹 끝]으로 묶어서 출력하세요.\n"
+            "   형식:\n"
+            "   [그룹 시작]\n"
+            "   원문 텍스트 또는 [이미지: 설명]\n"
+            "   [손필기: 내용 | 색상: 색깔]\n"
+            "   [그룹 끝]\n"
+            "\n"
+            "9. 어떤 내용과도 연관짓기 어려운 단독 요소는 그룹 없이 그대로 출력하세요.\n"
+            "10. 이미지/텍스트 위에 필기가 있으면 절대 별도 문단으로 분리하지 마세요.\n"
         )),
         HumanMessage(content=[
                 {

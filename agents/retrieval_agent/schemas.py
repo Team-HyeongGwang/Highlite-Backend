@@ -13,6 +13,7 @@ class PDFChunk(BaseModel):
     db_id: Optional[int] = None              # DB 저장 후 할당될 ID
     page: int
     paragraph_index: int
+    chunk_cluster: Optional[str] = None      # 추가: 페이지 내 의미 단위 묶음
     content: str                             # 모든 텍스트(본문/형광펜/손글씨)는 무조건 여기
     embedding: Optional[List[float]] = None  # pgvector 저장용
 
