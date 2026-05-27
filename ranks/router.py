@@ -11,7 +11,7 @@ router = APIRouter()
 async def test_retrieval():
     return {"message": "Ranking 입력 라우터 정상 작동 중!"}
 
-@router.post("/color-rank")
+@router.post("/colors")
 async def create_rank(
     request: RankingRequest,
     user_id: int,  # 나중에 JWT로 교체
@@ -21,7 +21,7 @@ async def create_rank(
     return {"message": "랭킹 저장 완료"}
 
 
-@router.get("/color-rank")
+@router.get("/colors")
 async def get_rank(
     user_id: int,
     db: AsyncSession = Depends(get_db)
