@@ -1,8 +1,11 @@
 from dotenv import load_dotenv
 load_dotenv()  
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
 
 from db.database import engine, Base
@@ -16,6 +19,8 @@ from agents.personalized_agent.router import router as personalized_router
 from api.workflow import router as workflow_router
 from ranks.router import router as rank_router
 
+
+from api.users import router as users_router
 
 # 서버가 켜질 때 자동으로 실행될 준비(시작) 작업을 정의
 @asynccontextmanager
@@ -43,10 +48,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 서버가 잘 켜졌는지 확인하는 테스트용 API
+SECRET_KEY = os.getenv("SESSION_SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("🚨 .env 파일에 SESSION_SECRET_KEY가 설정되지 않았습니다!")
+
+# 구글 로그인을 위한 세션 미들웨어 
+app.add_middleware(
+    SessionMiddleware, 
+    secret_key=SECRET_KEY 
+)
+
 @app.get("/")
 def read_root():
     return {"message": "Highlite 멀티 에이전트 서버가 정상 작동 중입니다!"}
+
+app.include_router(users_router)
 
 app.include_router(
     importance_router, 
