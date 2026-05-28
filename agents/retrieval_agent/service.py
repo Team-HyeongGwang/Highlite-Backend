@@ -1,9 +1,9 @@
 
-from typing import List
 import os
 import base64
 import re
 import fitz  # PyMuPDF
+import uuid
 from typing import TypedDict
 import asyncio
 from pathlib import Path
@@ -22,6 +22,7 @@ from db.models import DocumentChunk
 from .schemas import PDFChunk
 from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
+from ranks.service import get_ranking
 
 load_dotenv()
 
@@ -83,7 +84,7 @@ async def init_document(input_data: dict) -> dict:
     await session.flush() 
     
     print(f"[1] document 생성 완료 id={document.id}")
-    input_data["document_id"] = document.id  # 상태 추가
+    input_data["document_id"] = document.id
     return input_data
 
 
@@ -195,12 +196,15 @@ async def save_embeddings_to_db(input: dict) -> dict:
 async def send_to_importance_agent(input: dict) -> dict:
     chunks: list[PDFChunk] = input["chunks"]
     session: AsyncSession = input["session"]
-
-    # TODO: 추후 input dict에서 받아오도록 변경
-    group_id = "default_group"
+    user_id: int = input["user_id"]
+    group_id = input["group_id"]
+    
     doc_type = "pdf"
-    highlighter_ranking = {"yellow": 1, "green": 2, "pink": 3}
-    pen_ranking = {"red": 1, "blue": 2, "black": 3}
+
+    # DB에서 사용자 ranking 조회
+    ranking = await get_ranking(user_id, session)
+    highlighter_ranking = ranking["highlighter_ranking"] if ranking else {}
+    pen_ranking = ranking["pen_ranking"] if ranking else {}
 
     tasks = []
 
@@ -267,13 +271,15 @@ async def run_pdf_pipeline(
     try:
         print(f"\n[Master Pipeline] '{pdf_path.name}' 파이프라인 구동을 시작합니다... 🚀")
         
-        await pdf_pipeline_chain.ainvoke({
+        result = await pdf_pipeline_chain.ainvoke({
             "pdf_path": pdf_path,
             "user_id": user_id,
             "group_id": group_id,
             "session": session,
         })
+
         print(f"[Success] 전체 PDF 파이프라인 체인이 에러 없이 완주했습니다! 🎯\n")
+        return [result["document_id"]] # Response JSON에 출력 결과 담음
     except Exception as e:
         print(f"[Error] 파이프라인 수행 중 에러 발생: {e}")
         raise
