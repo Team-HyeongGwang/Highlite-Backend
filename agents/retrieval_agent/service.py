@@ -229,7 +229,7 @@ async def send_to_importance_agent(input: dict) -> dict:
             ))
 
         request = ImportanceRequest(
-            group_id=group_id,
+            group_id=str(group_id),
             chunk_id=chunk.db_id,
             doc_type=doc_type,
             original_text=chunk.content,
