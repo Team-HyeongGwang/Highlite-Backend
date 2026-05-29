@@ -1,5 +1,6 @@
 import shutil
 import uuid
+import json
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pathlib import Path
@@ -18,11 +19,19 @@ async def test_retrieval():
 async def upload_and_process_pdf(
     file: UploadFile = File(..., description="처리할 PDF 파일을 업로드하세요"),
     user_id: int = Form(..., description="사용자 ID"),
+    doc_type: str = Form(..., description="문서 타입 정보 (JSON 문자열)"),
     db: AsyncSession = Depends(get_db)
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="PDF 파일만 업로드할 수 있습니다.")
 
+    # 프론트에서 보낸 JSON 문자열을 딕셔너리로 파싱
+    try:
+        parsed_doc_type = json.loads(doc_type)
+        print(f"[Info] 파싱된 doc_type: {parsed_doc_type}") # 예: {"mode": "single", "type": None}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="유효하지 않은 doc_type 데이터입니다.")
+    
     upload_dir = Path("temp_uploads")
     upload_dir.mkdir(parents=True, exist_ok=True)
     
@@ -37,6 +46,7 @@ async def upload_and_process_pdf(
             pdf_path=pdf_path,
             user_id=user_id,
             group_id=group_id,
+            doc_type=doc_type,
             session=db
         )
 
