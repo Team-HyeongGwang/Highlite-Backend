@@ -17,6 +17,10 @@ from agents.question_agent.schemas import (
     SubmitAnswerResponse,
     AnswerResult,
     RegenerateFromWrongRequest,
+    QuestionListRequest,
+    QuestionListResponse,
+    DocumentItem,
+    AttemptItem,
 )
 
 claude_client = anthropic.AsyncAnthropic()
@@ -415,7 +419,6 @@ async def submit_answers_service(
             "explanation": question.explanation,
         })
 
-    # QuizResult 먼저 저장
     correct = sum(1 for r in results if r["is_correct"])
     total = len(results)
     score_percent = round((correct / total) * 100) if total > 0 else 0
@@ -429,9 +432,8 @@ async def submit_answers_service(
         attempt_phase=request.attempt_phase,
     )
     db.add(quiz_result)
-    await db.flush()  # quiz_result.id 받기 위해
+    await db.flush()
 
-    # UserAnswer 저장
     for r in results:
         answer = UserAnswer(
             quiz_result_id=quiz_result.id,
@@ -468,7 +470,6 @@ async def regenerate_from_wrong_service(
 ) -> QuestionGenerateResponse:
     from db.models import UserAnswer, QuizResult
 
-    # 1) 해당 유저 + 해당 문서의 오답 question_id 가져오기
     wrong_stmt = (
         select(UserAnswer.question_id)
         .join(QuizResult, UserAnswer.quiz_result_id == QuizResult.id)
@@ -479,7 +480,6 @@ async def regenerate_from_wrong_service(
     wrong_rows = (await db.execute(wrong_stmt)).all()
     wrong_question_ids = [r[0] for r in wrong_rows]
 
-    # 2) 오답 chunk_id 가져오기
     wrong_chunk_ids = set()
     if wrong_question_ids:
         stmt = (
@@ -491,7 +491,6 @@ async def regenerate_from_wrong_service(
         wrong_chunk_rows = (await db.execute(stmt)).all()
         wrong_chunk_ids = {r[0] for r in wrong_chunk_rows}
 
-    # 3) 전체 chunks 가져오기
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
@@ -503,14 +502,12 @@ async def regenerate_from_wrong_service(
     if not rows:
         raise ValueError("해당 문서의 중요도 분석 결과가 없습니다.")
 
-    # 4) User ranking 가져오기
     document = rows[0][2]
     user_q = await db.execute(select(User).where(User.id == document.user_id))
     user = user_q.scalar_one_or_none()
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
 
-    # 5) 오답 chunk는 1순위로 올리기
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
         if chunk.id in wrong_chunk_ids:
@@ -532,3 +529,51 @@ async def regenerate_from_wrong_service(
 
     await db.commit()
     return QuestionGenerateResponse(questions=generated)
+
+# ────────────────────────────────────────
+# 5. 문서별 생성 문제 리스트 조회
+# ────────────────────────────────────────
+async def get_question_list_service(
+    request: QuestionListRequest,
+    db: AsyncSession,
+) -> QuestionListResponse:
+    from db.models import QuizResult
+
+    doc_stmt = select(Document).where(Document.user_id == request.user_id)
+    if request.document_id:
+        doc_stmt = doc_stmt.where(Document.id == request.document_id)
+
+    doc_rows = (await db.execute(doc_stmt)).scalars().all()
+
+    if not doc_rows:
+        raise ValueError("해당 유저의 문서가 없습니다.")
+
+    documents = []
+    for doc in doc_rows:
+        result_stmt = (
+            select(QuizResult)
+            .where(QuizResult.document_id == doc.id)
+            .order_by(QuizResult.created_at.asc())
+        )
+        results = (await db.execute(result_stmt)).scalars().all()
+
+        attempts = []
+        for round_num, qr in enumerate(results, start=1):
+            attempts.append(AttemptItem(
+                quiz_result_id=qr.id,
+                round=round_num,
+                created_at=qr.created_at.isoformat() if qr.created_at else "",
+                q_num=qr.total_questions,
+                score=qr.score_percent if qr.correct_count > 0 else None,
+                attempt_phase=qr.attempt_phase,
+            ))
+
+        documents.append(DocumentItem(
+            document_id=doc.id,
+            title=doc.title,
+            upload_date=doc.created_at.isoformat() if doc.created_at else "",
+            total_count=len(results),
+            attempts=attempts,
+        ))
+
+    return QuestionListResponse(documents=documents)

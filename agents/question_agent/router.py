@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
@@ -10,12 +11,15 @@ from agents.question_agent.schemas import (
     SubmitAnswerRequest,
     SubmitAnswerResponse,
     RegenerateFromWrongRequest,
+    QuestionListRequest,
+    QuestionListResponse,
 )
 from agents.question_agent.service import (
     generate_questions_service,
     regenerate_question_service,
     submit_answers_service,
     regenerate_from_wrong_service,
+    get_question_list_service,
 )
 
 router = APIRouter()
@@ -72,5 +76,20 @@ async def regenerate_from_wrong(
 ):
     try:
         return await regenerate_from_wrong_service(request, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ────────────────────────────────────────
+# 5. 문서별 생성 문제 리스트 조회
+# ────────────────────────────────────────
+@router.get("/list", response_model=QuestionListResponse)
+async def get_question_list(
+    user_id: int,
+    document_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        request = QuestionListRequest(user_id=user_id, document_id=document_id)
+        return await get_question_list_service(request, db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -1,11 +1,10 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
-from common.schemas import VisualCue
 from uuid import UUID
 
 class QuestionGenerateRequest(BaseModel):
     group_id: str = Field(..., description="문제를 출제할 문서 세트 ID")
-    question_count: int = Field(10, ge=10, le=30, description="생성할 문제 개수 (10~30개)")
+    question_count: int = Field(10, ge=10, le=50, description="생성할 문제 개수 (10~50개)")
 
 class QuestionItem(BaseModel):
     chunk_id: int
@@ -42,10 +41,9 @@ class RegenerateResponse(BaseModel):
 
 class SubmitAnswerRequest(BaseModel):
     user_id: int
-    document_id: UUID  # QuizResult에 필요
+    document_id: int
     attempt_phase: str = "first_attempt"
     answers: List[dict] = Field(..., description="[{question_id: 1, submitted_answer: '②'}, ...]")
-
 
 class AnswerResult(BaseModel):
     question_id: int
@@ -62,6 +60,31 @@ class SubmitAnswerResponse(BaseModel):
 
 class RegenerateFromWrongRequest(BaseModel):
     user_id: int
-    document_id: UUID
-    group_id: UUID
-    question_count: int = Field(10, ge=10, le=30)
+    document_id: int
+    group_id: str
+    question_count: int = Field(10, ge=10, le=50)
+
+# ────────────────────────────────────────
+# /question/list 용 schemas
+# ────────────────────────────────────────
+class AttemptItem(BaseModel):
+    quiz_result_id: int
+    round: int
+    created_at: str
+    q_num: int
+    score: Optional[int] = None
+    attempt_phase: str
+
+class DocumentItem(BaseModel):
+    document_id: int
+    title: str
+    upload_date: str
+    total_count: int
+    attempts: List[AttemptItem]
+
+class QuestionListRequest(BaseModel):
+    user_id: int
+    document_id: Optional[int] = None
+
+class QuestionListResponse(BaseModel):
+    documents: List[DocumentItem]
