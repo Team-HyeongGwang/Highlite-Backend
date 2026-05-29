@@ -19,6 +19,7 @@ async def test_retrieval():
 async def upload_and_process_pdf(
     file: UploadFile = File(..., description="처리할 PDF 파일을 업로드하세요"),
     user_id: int = Form(..., description="사용자 ID"),
+    group_id: str = Form(..., description="그룹 ID"),
     doc_type: str = Form(..., description="문서 타입 정보 (JSON 문자열)"),
     db: AsyncSession = Depends(get_db)
 ):
@@ -36,16 +37,17 @@ async def upload_and_process_pdf(
     upload_dir.mkdir(parents=True, exist_ok=True)
     
     pdf_path = upload_dir / file.filename
-    group_id = uuid.uuid4() 
 
     try:
         with pdf_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        parsed_group_id = uuid.UUID(group_id)  # str → UUID 변환
+        
         document_ids = await run_pdf_pipeline( 
             pdf_path=pdf_path,
             user_id=user_id,
-            group_id=group_id,
+            group_id=parsed_group_id,
             doc_type=doc_type,
             session=db
         )
