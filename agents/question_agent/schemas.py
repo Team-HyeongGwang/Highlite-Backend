@@ -84,7 +84,7 @@ class DocumentItem(BaseModel):
 
 class QuestionListRequest(BaseModel):
     user_id: int
-    document_id: Optional[int] = None
+    document_id: Optional[UUID] = None
 
 class QuestionListResponse(BaseModel):
     documents: List[DocumentItem]

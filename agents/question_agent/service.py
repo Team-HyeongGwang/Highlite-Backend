@@ -568,6 +568,7 @@ async def get_question_list_service(
                 attempt_phase=qr.attempt_phase,
             ))
 
+        # quiz_results 없어도 문서는 보여줌 (attempts 빈 배열로)
         documents.append(DocumentItem(
             document_id=doc.id,
             title=doc.title,
@@ -576,4 +577,5 @@ async def get_question_list_service(
             attempts=attempts,
         ))
 
+    # documents가 비어있어도 빈 리스트 반환 (404 대신 200)
     return QuestionListResponse(documents=documents)

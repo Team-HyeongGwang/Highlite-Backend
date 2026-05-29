@@ -85,7 +85,7 @@ async def regenerate_from_wrong(
 @router.get("/list", response_model=QuestionListResponse)
 async def get_question_list(
     user_id: int,
-    document_id: Optional[int] = None,
+    document_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     try:
