@@ -41,7 +41,7 @@ class RegenerateResponse(BaseModel):
 
 class SubmitAnswerRequest(BaseModel):
     user_id: int
-    document_id: int
+    document_id: UUID
     attempt_phase: str = "first_attempt"
     answers: List[dict] = Field(..., description="[{question_id: 1, submitted_answer: '②'}, ...]")
 
@@ -60,7 +60,7 @@ class SubmitAnswerResponse(BaseModel):
 
 class RegenerateFromWrongRequest(BaseModel):
     user_id: int
-    document_id: int
+    document_id: UUID
     group_id: str
     question_count: int = Field(10, ge=10, le=50)
 
