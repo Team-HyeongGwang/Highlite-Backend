@@ -13,7 +13,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableLambda
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import OpenAIEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,12 +27,12 @@ from ranks.service import get_ranking
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini로 바꿀 수도 있음
-llm = ChatOpenAI(
-    model="gpt-4o",
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-pro", 
     temperature=0,
-    api_key=os.environ.get("OPENAI_API_KEY"),
+    gemini_api_key=GEMINI_API_KEY,
 )
 
 embeddings_model = OpenAIEmbeddings(
@@ -110,7 +110,7 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
             HumanMessage(content=[
                 {
                     "type": "image",
-                    "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
                 },
                 {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."},
             ]),
