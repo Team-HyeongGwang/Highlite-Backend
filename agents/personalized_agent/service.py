@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from uuid import UUID
 
 from db.models import Question, Document, QuizResult, UserAnswer, ImportanceResult
 
@@ -8,7 +9,7 @@ from db.models import Question, Document, QuizResult, UserAnswer, ImportanceResu
 # ────────────────────────────────────────
 async def record_quiz_session(
     user_id: int,
-    group_id: str,
+    group_id: UUID,
     total_questions: int,
     correct_count: int,
     score_percent: int,
@@ -33,12 +34,12 @@ async def record_quiz_session(
         attempt_phase=attempt_phase
     )
     db.add(quiz_master)
-    await db.flush() 
+    await db.flush()
 
     # 1-2. 낱개 문제 정오답 기록 및 출제 정렬 스코어 조작
     for ans in answers_list:
         user_ans = UserAnswer(
-            quiz_result_id=quiz_master.id, 
+            quiz_result_id=quiz_master.id,
             question_id=ans["question_id"],
             user_answer=ans["user_answer"],
             is_correct=ans["is_correct"]
@@ -52,7 +53,7 @@ async def record_quiz_session(
             .where(Question.id == ans["question_id"])
         )
         imp_res = (await db.execute(stmt)).scalar_one_or_none()
-        
+
         if imp_res:
             if attempt_phase != "first_attempt":
                 score_modifier = -2.5 if ans["is_correct"] else 3.0
