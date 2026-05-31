@@ -8,9 +8,7 @@ from agents.evaluation_agent.schemas import (
 )
 from agents.evaluation_agent.service import review
 
-router = APIRouter(
-    tags=["Evaluation (검수 에이전트)"]
-)
+router = APIRouter()
 
 @router.post("/test-evaluation")
 async def test_evaluation():
