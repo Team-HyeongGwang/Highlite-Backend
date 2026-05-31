@@ -65,12 +65,15 @@ def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
 # ── DB에 Document 저장 ────────────────────────────────────────
 async def init_document(input_data: dict) -> dict:
     pdf_path: Path = input_data["pdf_path"]
-    4
+    
+    # 파이프라인을 통해 전달된 doc_type 딕셔너리 추출
+    doc_type_info = input_data.get("doc_type", {})
+    
     document = Document(
         user_id=input_data["user_id"],
         group_id=str(input_data["group_id"]),
         title=pdf_path.stem,
-        doc_type="combined", 
+        doc_type=doc_type_info,
     )
     session: AsyncSession = input_data["session"]
     session.add(document)
@@ -281,7 +284,7 @@ async def send_to_importance_agent(input: dict) -> dict:
             visual_cues.append(VisualCue(type="pen", color=chunk.handwriting_color, target_text=chunk.content))
 
         request = ImportanceRequest(
-            group_id=group_id,
+            group_id=str(group_id),
             chunk_id=chunk.db_id,
             doc_type=doc_type,
             original_text=chunk.content,
@@ -292,10 +295,10 @@ async def send_to_importance_agent(input: dict) -> dict:
 
         tasks.append(sem_analyze(request))
         
-    # ⭐️ 1. 에이전트들이 123개 청크를 병렬로 마구마구 분석하고 결과만 배열로 모아옴
+    # 에이전트들이 청크들을 병렬로 분석하고 결과만 배열로 모아옴
     llm_results = await asyncio.gather(*tasks)
 
-    # ⭐️ 2. 모아온 결과(123개)를 안전하게 순차적으로 DB에 삽입 (충돌 완벽 방지)
+    # 모아온 결과를 안전하게 순차적으로 DB에 삽입 (충돌 완벽 방지)
     for db_result in llm_results:
         session.add(db_result)
 
@@ -322,6 +325,7 @@ async def run_pdf_pipeline(
     pdf_path: Path,
     user_id: int,
     group_id: str,
+    doc_type: str,
     session: AsyncSession,
 ) -> None:
     try:
@@ -331,6 +335,7 @@ async def run_pdf_pipeline(
             "pdf_path": pdf_path,
             "user_id": user_id,
             "group_id": group_id,
+            "doc_type": doc_type,
             "session": session,
         })
 
