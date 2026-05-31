@@ -21,6 +21,7 @@ from ranks.router import router as rank_router
 
 
 from api.users import router as users_router
+from api.export import router as export_router
 
 # 서버가 켜질 때 자동으로 실행될 준비(시작) 작업을 정의
 @asynccontextmanager
@@ -63,6 +64,12 @@ def read_root():
     return {"message": "Highlite 멀티 에이전트 서버가 정상 작동 중입니다!"}
 
 app.include_router(users_router)
+
+app.include_router(
+    export_router,
+    prefix="/export",
+    tags=["내보내기"]
+)
 
 app.include_router(
     importance_router, 
