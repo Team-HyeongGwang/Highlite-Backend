@@ -1,11 +1,41 @@
 from pydantic import BaseModel, Field
 from uuid import UUID
+from typing import Optional
 
-# 프론트엔드에서 학생이 답을 제출할 때 보낼 양식
-class AnswerSubmissionRequest(BaseModel):
+# ── 제출 스키마 ──────────────────────────────────────────
+class BatchAnswerItem(BaseModel):
+    question_id: int
+    user_answer: str
+    is_correct: bool
+
+class BatchSubmissionRequest(BaseModel):
     user_id: int
     group_id: UUID
-    question_id: int = Field(..., description="학생이 푼 문제의 DB ID")
-    user_answer: str = Field(..., description="학생이 제출한 답")
-    is_correct: bool = Field(..., description="단순 정답 여부 (프론트에서 비교 후 전송하거나 채점 API 거친 후의 결과)")
     attempt_phase: str = Field("first_attempt", description="first_attempt 또는 re_attempt")
+    answers: list[BatchAnswerItem]
+
+# ── 조회 응답 스키마 ─────────────────────────────────────
+class AttemptSummary(BaseModel):
+    id: int
+    round: int
+    date: str
+    total: int
+    correct: int
+    wrong: int
+
+class DocumentQuizResults(BaseModel):
+    id: str
+    title: str
+    total_count: int
+    attempts: list[AttemptSummary]
+
+class WrongAnswerItem(BaseModel):
+    id: str
+    imp: str
+    type: str
+    text: str
+    options: Optional[list[str]]
+    my_ans: str
+    correct: str
+    source: str
+    exp: str
