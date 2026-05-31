@@ -1,9 +1,9 @@
-
 import os
 import base64
 import re
 import fitz  # PyMuPDF
 import uuid
+import json
 from typing import TypedDict
 import asyncio
 from pathlib import Path
@@ -27,12 +27,12 @@ from ranks.service import get_ranking
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-pro", 
+    model="gemini-2.5-pro", 
     temperature=0,
-    gemini_api_key=GEMINI_API_KEY,
+    google_api_key=GOOGLE_API_KEY,
 )
 
 embeddings_model = OpenAIEmbeddings(
@@ -42,28 +42,21 @@ embeddings_model = OpenAIEmbeddings(
 
 # ── PDF 청크 파싱 ────────────────────────────────────────
 def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
-    raw_content = raw["content"]
+    # 1. 내용(content)을 안전하게 문자열로 변환
+    raw_content = str(raw.get("content", ""))
 
-    def extract_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
-        match = re.search(rf"\[{tag}: (.+?)(?:\s*\|\s*색상:\s*(.+?))?\]", raw_content)
-        if match:
-            return match.group(1).strip(), match.group(2).strip() if match.group(2) else None
-        return None, None
+    # 2. 제미나이가 JSON으로 예쁘게 뽑아준 색상 정보 바로 가져오기
+    handwriting_color = raw.get("handwriting_color")
+    highlight_color = raw.get("highlight_color")
 
-    handwriting, handwriting_color = extract_tag("손필기")
-    highlight, highlight_color = extract_tag("형광펜")
-
+    # 3. 혹시나 내용에 남아있을 수 있는 [태그] 찌꺼기 깔끔하게 청소
     clean_content = re.sub(r"\[(손필기|형광펜): .+?\]", "", raw_content).strip()
-
-    final_content = clean_content
-    if not final_content:
-        final_content = handwriting or highlight or ""
 
     return PDFChunk(
         pdf_name=pdf_name,
-        page=raw["page"],
-        paragraph_index=raw["paragraph_index"],
-        content=final_content,
+        page=raw.get("page", 1),
+        paragraph_index=raw.get("paragraph_index", 1),
+        content=clean_content or raw_content,
         handwriting_color=handwriting_color,
         highlight_color=highlight_color,
     )
@@ -72,10 +65,10 @@ def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
 # ── DB에 Document 저장 ────────────────────────────────────────
 async def init_document(input_data: dict) -> dict:
     pdf_path: Path = input_data["pdf_path"]
-    
+    4
     document = Document(
         user_id=input_data["user_id"],
-        group_id=input_data["group_id"],
+        group_id=str(input_data["group_id"]),
         title=pdf_path.stem,
         doc_type="combined", 
     )
@@ -89,46 +82,105 @@ async def init_document(input_data: dict) -> dict:
 
 
 
-# ── PDF를 Image로 변환한 뒤 내용 추출 ────────────────────────────────────────
 async def extract_pdf_to_raw(input_data: dict) -> dict:
     pdf_path: Path = input_data["pdf_path"]
-    doc = fitz.open(str(pdf_path))
     raw_chunks = []
+    
+    pages_data = []
+    with fitz.open(str(pdf_path)) as doc:
+        for page_num, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(dpi=150) # 유료니까 해상도 150으로 선명하게!
+            b64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
+            pages_data.append((page_num, b64))
+            
+    print(f"\n[2-1] 총 {len(pages_data)}장 이미지 변환 완료. 제미나이 분석 시작 (유료 모드 풀가동 🚀)...")
 
-    for page_num, page in enumerate(doc, start=1):
-        pix = page.get_pixmap(dpi=200)
-        b64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
-
+    # ⭐️ 1. 1장씩만 깔끔하게 분석하는 함수
+    async def process_single_page(page_num, b64):
         response = await llm.ainvoke([
-            SystemMessage(content=(
-                "당신은 문서 텍스트 추출 전문가입니다. "
-                "이미지에서 본문 텍스트를 그대로 추출하고, 문단은 빈 줄(\\n\\n)로 구분해 주세요. "
-                "손필기로 쓰여진 텍스트는 반드시 [손필기: 내용 | 색상: 색깔] 형태로 표시하세요. "
-                "형광펜으로 강조된 텍스트는 반드시 [형광펜: 내용 | 색상: 색깔] 형태로 표시하세요. "
-                "슬라이드 상단/하단의 메타 정보는 추출하지 마세요. 텍스트 외 다른 말은 절대 하지 마세요."
-            )),
+            SystemMessage(content=("""
+            당신은 강의 자료(PDF 슬라이드)를 분석하여 RAG 시스템에 활용될 청크(Chunk) 단위 데이터로 변환하는 AI입니다.
+
+            [기본 원칙]
+            1. 텍스트 추출 전, 슬라이드의 전체적인 맥락과 흐름을 먼저 파악하고 이를 바탕으로 청킹(Chunking)하세요.
+            2. 당신의 분석 과정, 생각, 부연 설명은 절대 출력하지 마세요. 오직 요청된 JSON 배열 형태만 반환해야 합니다.
+            3. 슬라이드 상/하단의 페이지 번호, 강의명 등 본문과 무관한 텍스트는 추출에서 제외하세요.
+
+            [데이터 처리 가이드]
+            1. 청킹(Chunking) 기준
+            - '의미상 이어지는 단일 개념'이나 '문단' 단위로 묶어주세요. 단어나 짧은 줄 단위로 파편화하지 마세요.
+            - 위에서부터 아래로 자연스러운 흐름에 따라 `paragraph_index`를 1부터 순차적으로 부여하세요.
+
+            2. 요소별 추출 규칙 (content 작성)
+            - [일반 텍스트]: 슬라이드에 적힌 실제 텍스트를 문맥에 맞게 묶어 `content`에 작성합니다.
+            - [이미지/도표]: 그림이나 도표 안에 포함된 글자들을 따로 떼어내지 마세요. 도표의 의미와 포함된 텍스트를 종합하여 객관적인 묘사로 `content`에 작성합니다.
+            - [필기/형광펜]: 슬라이드에 손글씨(handwriting)나 형광펜(highlight)이 칠해져 있다면, 그 텍스트나 의미를 `content`에 자연스럽게 포함시킵니다. 그리고 반드시 해당 색상을 별도 필드에 명시하세요.
+
+            [출력 형식]
+            반드시 아래 JSON 배열(List) 형식으로만 응답하세요. 다른 텍스트는 금지입니다.
+            [
+              {
+                  "paragraph_index": 1,
+                  "content": "추출된 텍스트 내용 또는 이미지/도표에 대한 설명",
+                  "handwriting_color": "blue",
+                  "highlight_color": "yellow"
+              }
+            ]
+            """)),
             HumanMessage(content=[
-                {
-                    "type": "image",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                },
-                {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."},
-            ]),
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."}
+            ])
         ])
+        
+        page_chunks = []
+        try:
+            raw_content = response.content
+            if isinstance(raw_content, list):
+                raw_text = "".join([str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in raw_content])
+            else:
+                raw_text = str(raw_content)
+                
+            raw_text = raw_text.strip()
+            
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[3:-3].strip()
+                
+            paragraphs = json.loads(raw_text)
+            for para_idx, item in enumerate(paragraphs, start=1):
+                if isinstance(item, dict):
+                    page_chunks.append({
+                        "page": page_num,
+                        "paragraph_index": item.get("paragraph_index", para_idx),
+                        "content": item.get("content", ""),
+                        "handwriting_color": item.get("handwriting_color"),
+                        "highlight_color": item.get("highlight_color"),
+                    })
+        except Exception as e:
+            print(f"[Error] {page_num} 페이지 파싱 실패: {e}")
+            
+        print(f"   -> {page_num} 페이지 추출 완료! ⚡️")
+        return page_chunks
 
-        page_text = response.content.strip()
-        paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
+    semaphore = asyncio.Semaphore(50)
+    
+    async def sem_process(page_num, b64):
+        async with semaphore:
+            return await process_single_page(page_num, b64)
 
-        for para_idx, content in enumerate(paragraphs, start=1):
-            raw_chunks.append({
-                "page": page_num,
-                "paragraph_index": para_idx,
-                "content": content,
-            })
+    tasks = [sem_process(page_num, b64) for page_num, b64 in pages_data]
+    results = await asyncio.gather(*tasks)
+    
+    for res in results:
+        if res:
+            raw_chunks.extend(res)
 
-    doc.close()
-    print(f"[2] PDF 파싱 완료 count={len(raw_chunks)}")
-    input_data["raw_chunks"] = raw_chunks  # 상태 추가
+    raw_chunks.sort(key=lambda x: (x.get("page", 0), x.get("paragraph_index", 0)))
+    
+    print(f"\n[2-2] PDF 파싱 완료! 총 청크 개수: {len(raw_chunks)}")
+    input_data["raw_chunks"] = raw_chunks  
     return input_data
 
 
@@ -168,9 +220,11 @@ async def embed_chunks(input: dict) -> dict:
 # ── 임베딩 값 DB에 저장 ────────────────────────────────────────
 async def save_embeddings_to_db(input: dict) -> dict:
     chunks: list[PDFChunk] = input["chunks"]
-    document_id: int = input["document_id"]
+    document_id: str = str(input["document_id"])
     session: AsyncSession = input["session"]
 
+    db_chunks = []
+    
     for chunk in chunks:
         db_chunk = DocumentChunk(
             document_id=document_id,
@@ -184,9 +238,12 @@ async def save_embeddings_to_db(input: dict) -> dict:
                 "highlight_color": chunk.highlight_color,
             },
         )
-        
         session.add(db_chunk)
-        await session.flush() 
+        db_chunks.append(db_chunk)
+        
+    await session.flush() 
+    
+    for chunk, db_chunk in zip(chunks, db_chunks):
         chunk.db_id = db_chunk.id  
         
     return input
@@ -197,14 +254,21 @@ async def send_to_importance_agent(input: dict) -> dict:
     chunks: list[PDFChunk] = input["chunks"]
     session: AsyncSession = input["session"]
     user_id: int = input["user_id"]
-    group_id = input["group_id"]
+    group_id = str(input["group_id"])
     
     doc_type = "pdf"
 
-    # DB에서 사용자 ranking 조회
     ranking = await get_ranking(user_id, session)
-    highlighter_ranking = ranking["highlighter_ranking"] if ranking else {}
-    pen_ranking = ranking["pen_ranking"] if ranking else {}
+    highlighter_ranking = (ranking["highlighter_ranking"] or {}) if ranking else {}
+    pen_ranking = (ranking["pen_ranking"] or {}) if ranking else {}
+
+    print(f"\n[Master Pipeline] 총 {len(chunks)}개의 청크 중요도 분석 시작... (10개씩 API 호출 후 일괄 DB 저장) 🚀")
+
+    semaphore = asyncio.Semaphore(50)
+
+    async def sem_analyze(req):
+        async with semaphore:
+            return await analyze_chunk_importance(req)
 
     tasks = []
 
@@ -212,18 +276,9 @@ async def send_to_importance_agent(input: dict) -> dict:
         visual_cues: list[VisualCue] = []
 
         if chunk.highlight_color:
-            visual_cues.append(VisualCue(
-                type="highlight",
-                color=chunk.highlight_color,
-                target_text=chunk.content,  # ✅ chunk.content로 대통합!
-            ))
-
+            visual_cues.append(VisualCue(type="highlight", color=chunk.highlight_color, target_text=chunk.content))
         if chunk.handwriting_color:
-            visual_cues.append(VisualCue(
-                type="pen",
-                color=chunk.handwriting_color,
-                target_text=chunk.content,
-            ))
+            visual_cues.append(VisualCue(type="pen", color=chunk.handwriting_color, target_text=chunk.content))
 
         request = ImportanceRequest(
             group_id=group_id,
@@ -235,13 +290,14 @@ async def send_to_importance_agent(input: dict) -> dict:
             pen_ranking=pen_ranking,
         )
 
-        tasks.append(analyze_chunk_importance(request, session))
+        tasks.append(sem_analyze(request))
         
-        # 담아둔 모든 중요도 분석 작업을 동시에 병렬(Concurrent)로 실행
-    print(f"\n[Master Pipeline] 총 {len(tasks)}개의 청크 중요도 분석을 동시에 시작합니다... 🚀")
-    
-    # asyncio.gather가 모든 대기 작업을 한 번에 쏘고 결과를 다 모아서 가져옴
-    await asyncio.gather(*tasks)
+    # ⭐️ 1. 에이전트들이 123개 청크를 병렬로 마구마구 분석하고 결과만 배열로 모아옴
+    llm_results = await asyncio.gather(*tasks)
+
+    # ⭐️ 2. 모아온 결과(123개)를 안전하게 순차적으로 DB에 삽입 (충돌 완벽 방지)
+    for db_result in llm_results:
+        session.add(db_result)
 
     await session.commit()
     
