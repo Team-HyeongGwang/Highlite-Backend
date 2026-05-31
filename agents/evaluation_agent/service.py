@@ -13,8 +13,23 @@ from agents.evaluation_agent.schemas import (
 # 검수용 LLM 설정 (일관된 검수를 위해 temperature=0 고정)
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
+REQUIRED_OPTION_KEYS = {"①", "②", "③", "④"}
+
 async def review(req: QuestionReviewRequest) -> QuestionReviewResponse:
-    # 1. Question Agent가 넘겨준 보기가 존재하면 텍스트 포맷으로 변환
+    # 1. 객관식 문제 선지 완성도 사전 검증 (LLM 호출 전)
+    if req.options is not None:
+        missing_keys = REQUIRED_OPTION_KEYS - set(req.options.keys())
+        if missing_keys:
+            missing_str = ", ".join(sorted(missing_keys))
+            return QuestionReviewResponse(
+                is_approved=False,
+                quality_score=2,
+                feedback=f"선지 누락: {missing_str} 보기가 생성되지 않았습니다. 4개 선지(①②③④)가 모두 필요합니다.",
+                suggested_revision_text=None,
+                suggested_revision_options=None,
+            )
+
+    # 2. Question Agent가 넘겨준 보기가 존재하면 텍스트 포맷으로 변환
     options_text = ""
     if req.options:
         options_text = "\n".join([f"  {k}: {v}" for k, v in req.options.items()])
