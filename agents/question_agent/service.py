@@ -613,6 +613,7 @@ async def get_question_list_service(
 
         documents.append(DocumentItem(
             document_id=doc.id,
+            group_id=doc.group_id,  
             title=doc.title,
             upload_date=doc.created_at.isoformat() if doc.created_at else "",
             total_count=len(group_rows),  # ← 수정: 문제 생성 횟수 (quiz_group 수)
@@ -739,4 +740,43 @@ async def get_wrong_answers_service(
     return WrongAnswersResponse(
         quiz_result_id=quiz_result_id,
         wrong_answers=wrong_answers,
+    )
+
+# ────────────────────────────────────────
+# 9. 채점 결과 상세 조회
+# ────────────────────────────────────────
+async def get_quiz_result_detail_service(
+    quiz_result_id: int,
+    db: AsyncSession,
+):
+    from db.models import UserAnswer, QuizResult
+    from agents.question_agent.schemas import QuizResultDetailResponse
+
+    qr_stmt = select(QuizResult).where(QuizResult.id == quiz_result_id)
+    qr = (await db.execute(qr_stmt)).scalar_one_or_none()
+    if not qr:
+        raise ValueError("채점 결과를 찾을 수 없습니다.")
+
+    ua_stmt = (
+        select(UserAnswer, Question)
+        .join(Question, UserAnswer.question_id == Question.id)
+        .where(UserAnswer.quiz_result_id == quiz_result_id)
+    )
+    rows = (await db.execute(ua_stmt)).all()
+
+    results = []
+    for user_answer, question in rows:
+        results.append(AnswerResult(
+            question_id=question.id,
+            submitted_answer=user_answer.user_answer or "",
+            correct_answer=question.answer,
+            is_correct=user_answer.is_correct,
+            explanation=question.explanation,
+        ))
+
+    return QuizResultDetailResponse(
+        total=qr.total_questions,
+        correct=qr.correct_count,
+        wrong=qr.total_questions - qr.correct_count,
+        results=results,
     )

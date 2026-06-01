@@ -81,6 +81,7 @@ class AttemptItem(BaseModel):
 
 class DocumentItem(BaseModel):
     document_id: UUID
+    group_id: UUID
     title: str
     upload_date: str
     total_count: int
@@ -100,6 +101,12 @@ class DeleteQuizResultRequest(BaseModel):
 class DeleteQuizResultResponse(BaseModel):
     deleted_count: int
     message: str
+    
+class QuizResultDetailResponse(BaseModel):
+    total: int
+    correct: int
+    wrong: int
+    results: List[AnswerResult]
 
 class QuestionsByGroupRequest(BaseModel):
     quiz_group_id: UUID
