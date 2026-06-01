@@ -47,7 +47,7 @@ _cache = None
 FEW_SHOT_FILES = [
     "handwritten_clean",
     "handwritten_formula",
-    "slide-formula",
+    "slide_formula",
     "slide_dense",
 ]
 
