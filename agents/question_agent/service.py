@@ -1,9 +1,8 @@
 import random, json, math, asyncio, httpx, anthropic, openai, os
+import uuid as uuid_lib
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from sqlalchemy import select, func
-from db.models import Question, ImportanceResult, DocumentChunk, Document, User
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -220,6 +219,7 @@ async def _generate_questions_from_chunks(
     chunks_by_priority: dict,
     question_count: int,
     db: AsyncSession,
+    quiz_group_id: uuid_lib.UUID = None,  # ← 추가: 문제 묶음 ID
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
     generated: List[QuestionItem] = []
@@ -284,6 +284,7 @@ async def _generate_questions_from_chunks(
 
             question = Question(
                 importance_id=importance.id,
+                quiz_group_id=quiz_group_id,  # ← 추가: 문제 묶음 ID 저장
                 question_type=question_type,
                 difficulty=str(priority),
                 question_text=result["question_text"],
@@ -346,17 +347,22 @@ async def generate_questions_service(
         )
         chunks_by_priority[priority].append((importance, chunk))
 
+    # ← 추가: 문제 묶음 ID 생성 (한 번에 생성된 문제 그룹)
+    quiz_group_id = uuid_lib.uuid4()
+
     generated = await _generate_questions_from_chunks(
         group_id=request.group_id,
         chunks_by_priority=chunks_by_priority,
         question_count=request.question_count,
         db=db,
+        quiz_group_id=quiz_group_id,  # ← 추가
     )
 
     await db.commit()
     return QuestionGenerateResponse(
-    document_id=document.id,
-    questions=generated
+        document_id=document.id,
+        quiz_group_id=quiz_group_id,  # ← 추가
+        questions=generated
     )
 
 # ────────────────────────────────────────
@@ -433,6 +439,7 @@ async def submit_answers_service(
     quiz_result = QuizResult(
         user_id=request.user_id,
         document_id=request.document_id,
+        quiz_group_id=request.quiz_group_id,  # ← 추가: 어떤 문제 묶음에 대한 채점인지
         total_questions=total,
         correct_count=correct,
         score_percent=score_percent,
@@ -527,15 +534,23 @@ async def regenerate_from_wrong_service(
             )
         chunks_by_priority[priority].append((importance, chunk))
 
+    # ← 추가: 오답 기반 재생성도 새 quiz_group_id 생성
+    quiz_group_id = uuid_lib.uuid4()
+
     generated = await _generate_questions_from_chunks(
         group_id=request.group_id,
         chunks_by_priority=chunks_by_priority,
         question_count=request.question_count,
         db=db,
+        quiz_group_id=quiz_group_id,  # ← 추가
     )
 
     await db.commit()
-    return QuestionGenerateResponse(questions=generated)
+    return QuestionGenerateResponse(
+        document_id=document.id,
+        quiz_group_id=quiz_group_id,  # ← 추가
+        questions=generated
+    )
 
 # ────────────────────────────────────────
 # 5. 문서별 생성 문제 리스트 조회
@@ -557,39 +572,49 @@ async def get_question_list_service(
 
     documents = []
     for doc in doc_rows:
-        # quiz_results 조회 (채점 기록)
-        result_stmt = (
-            select(QuizResult)
-            .where(QuizResult.document_id == doc.id)
-            .order_by(QuizResult.created_at.asc())
-        )
-        results = (await db.execute(result_stmt)).scalars().all()
-
-        # 문제 생성 횟수 조회 (questions 테이블 기준)
-        question_count_stmt = (
-            select(func.count(Question.id))
+        # 수정: quiz_group_id 별로 그룹핑 (문제 생성 단위)
+        group_stmt = (
+            select(
+                Question.quiz_group_id,
+                func.min(Question.created_at).label("created_at"),
+                func.count(Question.id).label("q_num")
+            )
             .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
             .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
             .where(DocumentChunk.document_id == doc.id)
+            .where(Question.quiz_group_id.isnot(None))
+            .group_by(Question.quiz_group_id)
+            .order_by(func.min(Question.created_at).asc())
         )
-        question_total = (await db.execute(question_count_stmt)).scalar() or 0
+        group_rows = (await db.execute(group_stmt)).all()
 
         attempts = []
-        for round_num, qr in enumerate(results, start=1):
+        for round_num, group in enumerate(group_rows, start=1):
+            # 해당 quiz_group의 채점 결과 조회
+            qr_stmt = (
+                select(QuizResult)
+                .where(QuizResult.document_id == doc.id)
+                .where(QuizResult.quiz_group_id == group.quiz_group_id)
+                .order_by(QuizResult.created_at.desc())
+                .limit(1)
+            )
+            qr = (await db.execute(qr_stmt)).scalar_one_or_none()
+
             attempts.append(AttemptItem(
-                quiz_result_id=qr.id,
+                quiz_result_id=qr.id if qr else None,
+                quiz_group_id=group.quiz_group_id,  # ← 추가
                 round=round_num,
-                created_at=qr.created_at.isoformat() if qr.created_at else "",
-                q_num=qr.total_questions,
-                score=qr.score_percent if qr.correct_count > 0 else None,
-                attempt_phase=qr.attempt_phase,
+                created_at=group.created_at.isoformat(),
+                q_num=group.q_num,
+                score=qr.score_percent if qr and qr.correct_count > 0 else None,
+                attempt_phase=qr.attempt_phase if qr else None,
             ))
 
         documents.append(DocumentItem(
             document_id=doc.id,
             title=doc.title,
             upload_date=doc.created_at.isoformat() if doc.created_at else "",
-            total_count=question_total,  # ← quiz_results 개수 → 문제 생성 횟수로 변경
+            total_count=len(group_rows),  # ← 수정: 문제 생성 횟수 (quiz_group 수)
             attempts=attempts,
         ))
 

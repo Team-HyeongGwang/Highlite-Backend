@@ -21,6 +21,7 @@ class QuestionItem(BaseModel):
 
 class QuestionGenerateResponse(BaseModel):
     document_id: Optional[UUID] = None
+    quiz_group_id: Optional[UUID] = None  # ← 추가: 문제 묶음 ID
     questions: List[QuestionItem]
 
 class RegenerateRequest(BaseModel):
@@ -43,6 +44,7 @@ class RegenerateResponse(BaseModel):
 class SubmitAnswerRequest(BaseModel):
     user_id: int
     document_id: UUID
+    quiz_group_id: Optional[UUID] = None  # ← 추가: 어떤 문제 묶음 채점인지
     attempt_phase: str = "first_attempt"
     answers: List[dict] = Field(..., description="[{question_id: 1, submitted_answer: '②'}, ...]")
 
@@ -69,12 +71,13 @@ class RegenerateFromWrongRequest(BaseModel):
 # /question/list 용 schemas
 # ────────────────────────────────────────
 class AttemptItem(BaseModel):
-    quiz_result_id: int
+    quiz_result_id: Optional[int] = None  # ← 수정: 채점 전이면 None
+    quiz_group_id: UUID                   # ← 추가: 문제 묶음 ID
     round: int
     created_at: str
     q_num: int
     score: Optional[int] = None
-    attempt_phase: str
+    attempt_phase: Optional[str] = None   # ← 수정: 채점 전이면 None
 
 class DocumentItem(BaseModel):
     document_id: UUID
@@ -89,7 +92,7 @@ class QuestionListRequest(BaseModel):
 
 class QuestionListResponse(BaseModel):
     documents: List[DocumentItem]
-    
+
 class DeleteQuizResultRequest(BaseModel):
     user_id: int
     quiz_result_ids: List[int]
