@@ -13,6 +13,8 @@ from agents.question_agent.schemas import (
     RegenerateFromWrongRequest,
     QuestionListRequest,
     QuestionListResponse,
+    DeleteQuizResultRequest,
+    DeleteQuizResultResponse,
 )
 from agents.question_agent.service import (
     generate_questions_service,
@@ -20,6 +22,7 @@ from agents.question_agent.service import (
     submit_answers_service,
     regenerate_from_wrong_service,
     get_question_list_service,
+    delete_quiz_results_service,
 )
 
 router = APIRouter()
@@ -91,5 +94,20 @@ async def get_question_list(
     try:
         request = QuestionListRequest(user_id=user_id, document_id=document_id)
         return await get_question_list_service(request, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+# ────────────────────────────────────────
+# 6. 회차 삭제
+# ────────────────────────────────────────
+@router.delete("/quiz-result", response_model=DeleteQuizResultResponse)
+async def delete_quiz_results(
+    request: DeleteQuizResultRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await delete_quiz_results_service(request, db)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

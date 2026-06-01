@@ -88,3 +88,11 @@ class QuestionListRequest(BaseModel):
 
 class QuestionListResponse(BaseModel):
     documents: List[DocumentItem]
+    
+class DeleteQuizResultRequest(BaseModel):
+    user_id: int
+    quiz_result_ids: List[int]
+
+class DeleteQuizResultResponse(BaseModel):
+    deleted_count: int
+    message: str

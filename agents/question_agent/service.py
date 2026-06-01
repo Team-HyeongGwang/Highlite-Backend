@@ -8,6 +8,8 @@ load_dotenv()
 
 from db.models import Question, ImportanceResult, DocumentChunk, Document, User
 from agents.question_agent.schemas import (
+    DeleteQuizResultRequest,
+    DeleteQuizResultResponse,
     QuestionGenerateRequest,
     QuestionGenerateResponse,
     QuestionItem,
@@ -579,3 +581,37 @@ async def get_question_list_service(
 
     # documents가 비어있어도 빈 리스트 반환 (404 대신 200)
     return QuestionListResponse(documents=documents)
+
+# ────────────────────────────────────────
+# 6. 회차 삭제
+# ────────────────────────────────────────
+async def delete_quiz_results_service(
+    request: DeleteQuizResultRequest,
+    db: AsyncSession,
+) -> DeleteQuizResultResponse:
+    from db.models import QuizResult
+
+    # 해당 quiz_result_ids 조회
+    stmt = select(QuizResult).where(
+        QuizResult.id.in_(request.quiz_result_ids)
+    )
+    results = (await db.execute(stmt)).scalars().all()
+
+    if not results:
+        raise ValueError("해당 회차를 찾을 수 없습니다.")
+
+    # 본인 데이터인지 검증
+    for qr in results:
+        if qr.user_id != request.user_id:
+            raise PermissionError("삭제 권한이 없습니다.")
+
+    # 삭제
+    for qr in results:
+        await db.delete(qr)
+
+    await db.commit()
+
+    return DeleteQuizResultResponse(
+        deleted_count=len(results),
+        message="성공적으로 삭제되었습니다."
+    )
