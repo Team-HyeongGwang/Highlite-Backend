@@ -3,6 +3,7 @@
 import base64
 import fitz
 import datetime
+import asyncio
 import google.generativeai as genai
 from google.generativeai import caching
 from db.supabase_client import get_supabase_client
@@ -57,32 +58,56 @@ def pdf_page_to_b64(pdf_bytes: bytes) -> str:
     pix = doc[0].get_pixmap(dpi=150)
     return base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
 
+# ── 개별 파일 1세트(PDF + JSON)를 비동기로 다운로드하고 변환하는 내부 함수 ──
+async def _download_and_process_file(supabase, name: str) -> list:
+    # 1) 스토리지에서 PDF와 JSON을 동시에(병렬) 다운로드 시도
+    # 루프 바깥의 메인 스레드를 막지 않고 비동기로 처리
+    pdf_task = asyncio.to_thread(supabase.storage.from_("few-shot-examples").download, f"{name}.pdf")
+    json_task = asyncio.to_thread(supabase.storage.from_("few-shot-examples").download, f"{name}.json")
+    
+    pdf_bytes, answer_bytes = await asyncio.gather(pdf_task, json_task)
+    
+    # 2) CPU 연산(이미지 변환)은 루프를 안 막도록 별도 스레드에서 처리하면 좋으나, 1장이므로 바로 처리
+    b64 = pdf_page_to_b64(pdf_bytes)
+    answer_text = answer_bytes.decode("utf-8")
+    
+    # 제미나이 컨텐츠 포맷 구조 반환
+    return [
+        {"role": "user", "parts": [
+            {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+            {"text": "페이지 1 텍스트를 추출해 주세요."}
+        ]},
+        {"role": "model", "parts": [{"text": answer_text}]}
+    ]
+
 
 # ── 서버 시작 시 한 번만 실행 ──────────────────────────────────────────
 async def run_primer(input_data: dict) -> dict:
     global _cache
 
     supabase = get_supabase_client()
+    
+    print(f"[Primer] Few-shot 파일 {len(FEW_SHOT_FILES)}개 병렬 다운로드 시작... 🚀")
+    
+    # 1) 4개의 파일 쌍을 가져오는 태스크를 동시에 생성
+    tasks = [_download_and_process_file(supabase, name) for name in FEW_SHOT_FILES]
+    
+    # 2) 4개 세트가 동시에 네트워크 통신을 수행하도록 병렬 실행
+    results = await asyncio.gather(*tasks)
+    
+    # 3) 병렬로 받아온 결과들을 하나의 contents 리스트로 병합
     contents = []
-
-    for name in FEW_SHOT_FILES:
-        pdf_bytes = supabase.storage.from_("few-shot-examples").download(f"{name}.pdf")
-        b64 = pdf_page_to_b64(pdf_bytes)
-        answer_bytes = supabase.storage.from_("few-shot-examples").download(f"{name}.json")
-        answer_text = answer_bytes.decode("utf-8")
-
-        contents.append({"role": "user", "parts": [
-            {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-            {"text": "페이지 1 텍스트를 추출해 주세요."}
-        ]})
-        contents.append({"role": "model", "parts": [{"text": answer_text}]})
-
+    for pair in results:
+        contents.extend(pair)
+        
+    # 4) 제미나이 컨텍스트 캐시 생성
     _cache = caching.CachedContent.create(
         model="models/gemini-2.5-pro",
         system_instruction=SYSTEM_PROMPT,
         contents=contents,
         ttl=datetime.timedelta(hours=6),
     )
+    
     print(f"[Primer] 캐시 등록 완료 — cache name: {_cache.name}")
     return input_data
 
