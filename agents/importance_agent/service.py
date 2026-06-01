@@ -1,4 +1,5 @@
 import json
+import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -6,15 +7,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from .schemas import ImportanceRequest, ImportanceResponse
 import db.models as models
 
-async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession) -> ImportanceResponse:
+async def analyze_chunk_importance(request: ImportanceRequest) -> models.ImportanceResult:
     """
     [1타 강사 AI] 파이썬 파서가 넘겨준 텍스트와 시각 정보를 바탕으로, 
     오직 중요도 점수 계산과 키워드 추출에만 집중하는 최적화된 LLM 호출 함수입니다.
     """
     
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
-    
-    # LLM output 양식
     structured_llm = llm.with_structured_output(ImportanceResponse)
     
     system_prompt = """
@@ -51,13 +50,32 @@ async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession)
     
     chain = prompt_template | structured_llm
     
-    response: ImportanceResponse = chain.invoke({
-        "highlighter_ranking": json.dumps(request.highlighter_ranking, ensure_ascii=False),
-        "pen_ranking": json.dumps(request.pen_ranking, ensure_ascii=False),
-        "original_text": request.original_text,
-        "meta_data": json.dumps([cue.model_dump() for cue in request.meta_data], ensure_ascii=False)
-    })
+    MAX_RETRIES = 3
+    response = None
     
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = await asyncio.wait_for(
+                chain.ainvoke({
+                    "highlighter_ranking": json.dumps(request.highlighter_ranking, ensure_ascii=False),
+                    "pen_ranking": json.dumps(request.pen_ranking, ensure_ascii=False),
+                    "original_text": request.original_text,
+                    "meta_data": json.dumps([cue.model_dump() for cue in request.meta_data], ensure_ascii=False)
+                }),
+                timeout=20.0 
+            )
+            break 
+            
+        except asyncio.TimeoutError:
+            print(f"[Warning] 청크 {request.chunk_id} 응답 잠수! ({attempt+1}/{MAX_RETRIES}) 즉시 재시도 🔄")
+        except Exception as e:
+            print(f"[Warning] 청크 {request.chunk_id} 통신 에러. 1초 후 재시도 🔄")
+            await asyncio.sleep(1)
+
+    if not response:
+        print(f"[Error] 청크 {request.chunk_id} 최종 실패! 기본값(0점)으로 처리하고 넘어갑니다. 😭")
+        response = ImportanceResponse(score=0.0, reasoning="API 분석 실패", summary="분석 실패", keywords=[])
+
     db_result = models.ImportanceResult(
         chunk_id=request.chunk_id,
         score=response.score,
@@ -66,7 +84,4 @@ async def analyze_chunk_importance(request: ImportanceRequest, db: AsyncSession)
         keywords=response.keywords 
     )
     
-    db.add(db_result)  
-    # await db.commit() 
-    
-    return response
+    return db_result
