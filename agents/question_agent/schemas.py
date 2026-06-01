@@ -76,7 +76,7 @@ class AttemptItem(BaseModel):
     attempt_phase: str
 
 class DocumentItem(BaseModel):
-    document_id: int
+    document_id: UUID
     title: str
     upload_date: str
     total_count: int

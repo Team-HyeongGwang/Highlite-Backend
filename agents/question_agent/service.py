@@ -548,40 +548,36 @@ async def get_question_list_service(
     doc_rows = (await db.execute(doc_stmt)).scalars().all()
 
     if not doc_rows:
-        return QuestionListResponse(documents=[])  # ← raise ValueError 대신 빈 리스트 반환
+        return QuestionListResponse(documents=[])
 
     documents = []
     for doc in doc_rows:
-        try:  # ← try/except 추가
-            result_stmt = (
-                select(QuizResult)
-                .where(QuizResult.document_id == doc.id)
-                .order_by(QuizResult.created_at.asc())
-            )
-            results = (await db.execute(result_stmt)).scalars().all()
+        result_stmt = (
+            select(QuizResult)
+            .where(QuizResult.document_id == doc.id)
+            .order_by(QuizResult.created_at.asc())
+        )
+        results = (await db.execute(result_stmt)).scalars().all()
 
-            attempts = []
-            for round_num, qr in enumerate(results, start=1):
-                attempts.append(AttemptItem(
-                    quiz_result_id=qr.id,
-                    round=round_num,
-                    created_at=qr.created_at.isoformat() if qr.created_at else "",
-                    q_num=qr.total_questions,
-                    score=qr.score_percent if qr.correct_count > 0 else None,
-                    attempt_phase=qr.attempt_phase,
-                ))
-
-            documents.append(DocumentItem(
-                document_id=doc.id,
-                title=doc.title,
-                upload_date=doc.created_at.isoformat() if doc.created_at else "",
-                total_count=len(results),
-                attempts=attempts,
+        attempts = []
+        for round_num, qr in enumerate(results, start=1):
+            attempts.append(AttemptItem(
+                quiz_result_id=qr.id,
+                round=round_num,
+                created_at=qr.created_at.isoformat() if qr.created_at else "",
+                q_num=qr.total_questions,
+                score=qr.score_percent if qr.correct_count > 0 else None,
+                attempt_phase=qr.attempt_phase,
             ))
-        except Exception:
-            continue  # ← 오류 나는 문서는 스킵
 
-    # documents가 비어있어도 빈 리스트 반환 (404 대신 200)
+        documents.append(DocumentItem(
+            document_id=doc.id,
+            title=doc.title,
+            upload_date=doc.created_at.isoformat() if doc.created_at else "",
+            total_count=len(results),
+            attempts=attempts,
+        ))
+
     return QuestionListResponse(documents=documents)
 
 # ────────────────────────────────────────
