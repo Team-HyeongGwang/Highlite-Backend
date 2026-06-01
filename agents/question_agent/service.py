@@ -2,6 +2,8 @@ import random, json, math, asyncio, httpx, anthropic, openai, os
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy import select, func
+from db.models import Question, ImportanceResult, DocumentChunk, Document, User
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -352,7 +354,10 @@ async def generate_questions_service(
     )
 
     await db.commit()
-    return QuestionGenerateResponse(questions=generated)
+    return QuestionGenerateResponse(
+    document_id=document.id,
+    questions=generated
+    )
 
 # ────────────────────────────────────────
 # 2. 피드백 기반 재생성 서비스
@@ -552,12 +557,22 @@ async def get_question_list_service(
 
     documents = []
     for doc in doc_rows:
+        # quiz_results 조회 (채점 기록)
         result_stmt = (
             select(QuizResult)
             .where(QuizResult.document_id == doc.id)
             .order_by(QuizResult.created_at.asc())
         )
         results = (await db.execute(result_stmt)).scalars().all()
+
+        # 문제 생성 횟수 조회 (questions 테이블 기준)
+        question_count_stmt = (
+            select(func.count(Question.id))
+            .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+            .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+            .where(DocumentChunk.document_id == doc.id)
+        )
+        question_total = (await db.execute(question_count_stmt)).scalar() or 0
 
         attempts = []
         for round_num, qr in enumerate(results, start=1):
@@ -574,7 +589,7 @@ async def get_question_list_service(
             document_id=doc.id,
             title=doc.title,
             upload_date=doc.created_at.isoformat() if doc.created_at else "",
-            total_count=len(results),
+            total_count=question_total,  # ← quiz_results 개수 → 문제 생성 횟수로 변경
             attempts=attempts,
         ))
 

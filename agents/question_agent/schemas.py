@@ -20,6 +20,7 @@ class QuestionItem(BaseModel):
     page_number: int = Field(..., description="출처 페이지 번호")
 
 class QuestionGenerateResponse(BaseModel):
+    document_id: Optional[UUID] = None
     questions: List[QuestionItem]
 
 class RegenerateRequest(BaseModel):
