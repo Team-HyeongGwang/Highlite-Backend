@@ -6,6 +6,8 @@ from db.database import get_db
 from agents.question_agent.schemas import (
     QuestionGenerateRequest,
     QuestionGenerateResponse,
+    QuestionsByGroupResponse,
+    WrongAnswersResponse,  # ← 추가
     RegenerateRequest,
     RegenerateResponse,
     SubmitAnswerRequest,
@@ -18,6 +20,8 @@ from agents.question_agent.schemas import (
 )
 from agents.question_agent.service import (
     generate_questions_service,
+    get_questions_by_group_service,
+    get_wrong_answers_service,  # ← 추가
     regenerate_question_service,
     submit_answers_service,
     regenerate_from_wrong_service,
@@ -96,7 +100,7 @@ async def get_question_list(
         return await get_question_list_service(request, db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
+
 # ────────────────────────────────────────
 # 6. 회차 삭제
 # ────────────────────────────────────────
@@ -109,5 +113,31 @@ async def delete_quiz_results(
         return await delete_quiz_results_service(request, db)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ────────────────────────────────────────
+# 7. quiz_group_id로 문제 조회
+# ────────────────────────────────────────
+@router.get("/questions-by-group", response_model=QuestionsByGroupResponse)
+async def get_questions_by_group(
+    quiz_group_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await get_questions_by_group_service(quiz_group_id, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ────────────────────────────────────────
+# 8. 오답 조회
+# ────────────────────────────────────────
+@router.get("/wrong-answers", response_model=WrongAnswersResponse)
+async def get_wrong_answers(
+    quiz_result_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await get_wrong_answers_service(quiz_result_id, db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

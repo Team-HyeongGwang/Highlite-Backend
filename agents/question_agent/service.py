@@ -14,6 +14,7 @@ from agents.question_agent.schemas import (
     QuestionGenerateRequest,
     QuestionGenerateResponse,
     QuestionItem,
+    QuestionsByGroupResponse,
     RegenerateRequest,
     RegenerateResponse,
     SubmitAnswerRequest,
@@ -534,7 +535,7 @@ async def regenerate_from_wrong_service(
             )
         chunks_by_priority[priority].append((importance, chunk))
 
-    # ← 추가: 오답 기반 재생성도 새 quiz_group_id 생성
+    # 오답 기반 재생성도 새 quiz_group_id 생성
     quiz_group_id = uuid_lib.uuid4()
 
     generated = await _generate_questions_from_chunks(
@@ -542,13 +543,13 @@ async def regenerate_from_wrong_service(
         chunks_by_priority=chunks_by_priority,
         question_count=request.question_count,
         db=db,
-        quiz_group_id=quiz_group_id,  # ← 추가
+        quiz_group_id=quiz_group_id,
     )
 
     await db.commit()
     return QuestionGenerateResponse(
         document_id=document.id,
-        quiz_group_id=quiz_group_id,  # ← 추가
+        quiz_group_id=quiz_group_id,
         questions=generated
     )
 
@@ -652,4 +653,90 @@ async def delete_quiz_results_service(
     return DeleteQuizResultResponse(
         deleted_count=len(results),
         message="성공적으로 삭제되었습니다."
+    )
+
+# ────────────────────────────────────────
+# 7. quiz_group_id로 문제 조회
+# ────────────────────────────────────────
+async def get_questions_by_group_service(
+    quiz_group_id: str,
+    db: AsyncSession,
+) -> QuestionsByGroupResponse:
+    from uuid import UUID as UUIDType
+
+    stmt = (
+        select(Question, ImportanceResult, DocumentChunk)
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .where(Question.quiz_group_id == UUIDType(quiz_group_id))
+        .order_by(Question.id.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+
+    if not rows:
+        raise ValueError("해당 문제 그룹을 찾을 수 없습니다.")
+
+    questions = []
+    for idx, (question, importance, chunk) in enumerate(rows):
+        source_type = get_source_type(chunk.meta_data or [])
+        priority = int(question.difficulty) if question.difficulty else 3
+        options = question.options if question.options else None
+
+        questions.append(QuestionItem(
+            chunk_id=chunk.id,
+            question_id=question.id,
+            question_type=question.question_type,
+            question_text=question.question_text,
+            options=options,
+            answer=question.answer,
+            explanation=question.explanation,
+            question_number=idx + 1,
+            priority=priority,
+            source_type=source_type,
+            page_number=chunk.page_number,
+        ))
+
+    return QuestionsByGroupResponse(
+        quiz_group_id=UUIDType(quiz_group_id),
+        questions=questions,
+    )
+
+# ────────────────────────────────────────
+# 8. 오답 조회
+# ────────────────────────────────────────
+async def get_wrong_answers_service(
+    quiz_result_id: int,
+    db: AsyncSession,
+):
+    from db.models import UserAnswer
+    from agents.question_agent.schemas import WrongAnswerItem, WrongAnswersResponse
+
+    stmt = (
+        select(UserAnswer, Question, ImportanceResult, DocumentChunk)
+        .join(Question, UserAnswer.question_id == Question.id)
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .where(UserAnswer.quiz_result_id == quiz_result_id)
+        .where(UserAnswer.is_correct == False)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    wrong_answers = []
+    for user_answer, question, importance, chunk in rows:
+        priority = int(question.difficulty) if question.difficulty else 3
+        wrong_answers.append(WrongAnswerItem(
+            question_id=question.id,
+            question_type=question.question_type,
+            question_text=question.question_text,
+            options=question.options,
+            answer=question.answer,
+            explanation=question.explanation,
+            submitted_answer=user_answer.user_answer or "",
+            page_number=chunk.page_number,
+            priority=priority,
+        ))
+
+    return WrongAnswersResponse(
+        quiz_result_id=quiz_result_id,
+        wrong_answers=wrong_answers,
     )

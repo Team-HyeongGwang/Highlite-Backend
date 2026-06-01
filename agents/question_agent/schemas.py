@@ -21,7 +21,7 @@ class QuestionItem(BaseModel):
 
 class QuestionGenerateResponse(BaseModel):
     document_id: Optional[UUID] = None
-    quiz_group_id: Optional[UUID] = None  # ← 추가: 문제 묶음 ID
+    quiz_group_id: Optional[UUID] = None  # 문제 묶음 ID
     questions: List[QuestionItem]
 
 class RegenerateRequest(BaseModel):
@@ -44,7 +44,7 @@ class RegenerateResponse(BaseModel):
 class SubmitAnswerRequest(BaseModel):
     user_id: int
     document_id: UUID
-    quiz_group_id: Optional[UUID] = None  # ← 추가: 어떤 문제 묶음 채점인지
+    quiz_group_id: Optional[UUID] = None
     attempt_phase: str = "first_attempt"
     answers: List[dict] = Field(..., description="[{question_id: 1, submitted_answer: '②'}, ...]")
 
@@ -71,13 +71,13 @@ class RegenerateFromWrongRequest(BaseModel):
 # /question/list 용 schemas
 # ────────────────────────────────────────
 class AttemptItem(BaseModel):
-    quiz_result_id: Optional[int] = None  # ← 수정: 채점 전이면 None
-    quiz_group_id: UUID                   # ← 추가: 문제 묶음 ID
+    quiz_result_id: Optional[int] = None  # 채점 전이면 None
+    quiz_group_id: UUID                   # 문제 묶음 ID
     round: int
     created_at: str
     q_num: int
     score: Optional[int] = None
-    attempt_phase: Optional[str] = None   # ← 수정: 채점 전이면 None
+    attempt_phase: Optional[str] = None   # 채점 전이면 None
 
 class DocumentItem(BaseModel):
     document_id: UUID
@@ -100,3 +100,25 @@ class DeleteQuizResultRequest(BaseModel):
 class DeleteQuizResultResponse(BaseModel):
     deleted_count: int
     message: str
+
+class QuestionsByGroupRequest(BaseModel):
+    quiz_group_id: UUID
+
+class QuestionsByGroupResponse(BaseModel):
+    quiz_group_id: UUID
+    questions: List[QuestionItem]
+
+class WrongAnswerItem(BaseModel):
+    question_id: int
+    question_type: str
+    question_text: str
+    options: Optional[Dict[str, str]] = None
+    answer: str
+    explanation: str
+    submitted_answer: str
+    page_number: int
+    priority: int
+
+class WrongAnswersResponse(BaseModel):
+    quiz_result_id: int
+    wrong_answers: List[WrongAnswerItem]
