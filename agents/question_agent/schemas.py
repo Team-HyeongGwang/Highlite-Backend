@@ -97,6 +97,7 @@ class QuestionListResponse(BaseModel):
 class DeleteQuizResultRequest(BaseModel):
     user_id: int
     quiz_result_ids: List[int]
+    quiz_group_ids: List[str] = []
 
 class DeleteQuizResultResponse(BaseModel):
     deleted_count: int

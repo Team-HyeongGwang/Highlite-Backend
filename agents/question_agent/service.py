@@ -629,30 +629,37 @@ async def delete_quiz_results_service(
     request: DeleteQuizResultRequest,
     db: AsyncSession,
 ) -> DeleteQuizResultResponse:
-    from db.models import QuizResult
+    from db.models import UserAnswer, QuizResult
+    from uuid import UUID as UUIDType
 
-    # 해당 quiz_result_ids 조회
-    stmt = select(QuizResult).where(
-        QuizResult.id.in_(request.quiz_result_ids)
-    )
-    results = (await db.execute(stmt)).scalars().all()
+    deleted_count = 0
 
-    if not results:
-        raise ValueError("해당 회차를 찾을 수 없습니다.")
+    # quiz_group_id 기준으로 questions + quiz_results + user_answers 삭제
+    for group_id_str in request.quiz_group_ids:
+        group_id = UUIDType(group_id_str)
 
-    # 본인 데이터인지 검증
-    for qr in results:
-        if qr.user_id != request.user_id:
-            raise PermissionError("삭제 권한이 없습니다.")
+        # 해당 그룹의 quiz_results 조회
+        qr_stmt = select(QuizResult).where(QuizResult.quiz_group_id == group_id)
+        quiz_results = (await db.execute(qr_stmt)).scalars().all()
 
-    # 삭제
-    for qr in results:
-        await db.delete(qr)
+        # 본인 데이터인지 검증
+        for qr in quiz_results:
+            if qr.user_id != request.user_id:
+                raise PermissionError("삭제 권한이 없습니다.")
+            await db.delete(qr)
+
+        # 해당 그룹의 questions 삭제
+        q_stmt = select(Question).where(Question.quiz_group_id == group_id)
+        questions = (await db.execute(q_stmt)).scalars().all()
+        for q in questions:
+            await db.delete(q)
+
+        deleted_count += 1
 
     await db.commit()
 
     return DeleteQuizResultResponse(
-        deleted_count=len(results),
+        deleted_count=deleted_count,
         message="성공적으로 삭제되었습니다."
     )
 
