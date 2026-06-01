@@ -49,7 +49,7 @@ async def generate_questions(
 # ────────────────────────────────────────
 # 2. 피드백 기반 재생성
 # ────────────────────────────────────────
-@router.post("/regenerate", response_model=RegenerateResponse)
+@router.post("/regenerate-from-feedback", response_model=RegenerateResponse)
 async def regenerate_question(
     request: RegenerateRequest,
     db: AsyncSession = Depends(get_db),
