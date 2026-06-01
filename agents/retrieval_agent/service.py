@@ -73,11 +73,14 @@ def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
 async def init_document(input_data: dict) -> dict:
     pdf_path: Path = input_data["pdf_path"]
     
+    # 파이프라인을 통해 전달된 doc_type 딕셔너리 추출
+    doc_type_info = input_data.get("doc_type", {})
+    
     document = Document(
         user_id=input_data["user_id"],
         group_id=input_data["group_id"],
         title=pdf_path.stem,
-        doc_type="combined", 
+        doc_type=doc_type_info,
     )
     session: AsyncSession = input_data["session"]
     session.add(document)
@@ -226,7 +229,7 @@ async def send_to_importance_agent(input: dict) -> dict:
             ))
 
         request = ImportanceRequest(
-            group_id=group_id,
+            group_id=str(group_id),
             chunk_id=chunk.db_id,
             doc_type=doc_type,
             original_text=chunk.content,
@@ -266,6 +269,7 @@ async def run_pdf_pipeline(
     pdf_path: Path,
     user_id: int,
     group_id: str,
+    doc_type: str,
     session: AsyncSession,
 ) -> None:
     try:
@@ -275,6 +279,7 @@ async def run_pdf_pipeline(
             "pdf_path": pdf_path,
             "user_id": user_id,
             "group_id": group_id,
+            "doc_type": doc_type,
             "session": session,
         })
 

@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from agents.personalized_agent.schemas import AnswerSubmissionRequest, PersonalizationResponse
-from agents.personalized_agent.service import record_quiz_session, analyze_weakness
+from agents.personalized_agent.schemas import AnswerSubmissionRequest
+from agents.personalized_agent.service import record_quiz_session
 
 router = APIRouter()
 
@@ -34,7 +34,7 @@ async def submit_quiz_session(
             total_questions=1,
             correct_count=1 if req.is_correct else 0,
             score_percent=100 if req.is_correct else 0,
-            attempt_phase="first_attempt",
+            attempt_phase=req.attempt_phase,
             answers_list=[{
                 "question_id": req.question_id,
                 "user_answer": req.user_answer,
@@ -46,20 +46,3 @@ async def submit_quiz_session(
         raise HTTPException(status_code=500, detail=f"세션 저장 에러: {str(e)}")
 
 
-# ────────────────────────────────────────
-# 2. 취약점 리포트 조회 엔드포인트
-# ────────────────────────────────────────
-@router.get("/weakness/{user_id}/{group_id}", response_model=PersonalizationResponse)
-async def get_weakness_report(
-    user_id: int, 
-    group_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    try:
-        return await analyze_weakness(
-            user_id=user_id, 
-            group_id=group_id, 
-            db=db
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"리포트 생성 에러: {str(e)}")

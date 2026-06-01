@@ -92,6 +92,7 @@ async def auth_google_callback(request: Request, db: AsyncSession = Depends(get_
 
         token_data = {
             "sub": user.email, 
+            "user_id": user.id,
             "username": user.username,
             "picture": user.profile_image_url,
             "join_date": join_date_str 
