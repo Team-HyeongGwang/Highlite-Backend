@@ -11,6 +11,6 @@ def get_supabase_client() -> Client:
     if _supabase is None:
         _supabase = create_client(
             os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_SERVICE_KEY"),
+            os.getenv("DATABASE_SERVICE_KEY"),
         )
     return _supabase
