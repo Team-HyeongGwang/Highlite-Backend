@@ -100,8 +100,12 @@ async def run_primer(input_data: dict) -> dict:
     for pair in results:
         contents.extend(pair)
         
+    print(f"[Primer] Few-shot 컨텐츠 조립 완료. 제미나이 컨텍스트 캐시 생성 중... 🧠")
+    
     # 4) 제미나이 컨텍스트 캐시 생성
-    _cache = caching.CachedContent.create(
+    # Google 서버와 통신하는 동기(Sync) 함수를 asyncio.to_thread로 감싸서 비동기로 처리
+    _cache = await asyncio.to_thread(
+        caching.CachedContent.create,
         model="models/gemini-2.5-pro",
         system_instruction=SYSTEM_PROMPT,
         contents=contents,
