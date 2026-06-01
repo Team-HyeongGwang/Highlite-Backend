@@ -9,7 +9,8 @@ import db.models as models
 
 async def analyze_chunk_importance(request: ImportanceRequest) -> models.ImportanceResult:
     """
-    [1타 강사 AI] OpenAI GPT-4o-mini의 미친 속도 + 타임아웃 방어막이 결합된 최종 버전!
+    [1타 강사 AI] 파이썬 파서가 넘겨준 텍스트와 시각 정보를 바탕으로, 
+    오직 중요도 점수 계산과 키워드 추출에만 집중하는 최적화된 LLM 호출 함수입니다.
     """
     
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
@@ -28,8 +29,8 @@ async def analyze_chunk_importance(request: ImportanceRequest) -> models.Importa
     * 순위에 등록되지 않은 색상이거나 시각 정보가 없는 경우: 철저히 텍스트의 문맥(개념, 정의 등)만으로 기본 점수 부여 (0.0 ~ 5.0)
     
     [입력 데이터]
-    - 사용자 형광펜 랭킹: {highlighter_ranking}
-    - 사용자 펜 랭킹: {pen_ranking}
+    - 사용자 형광펜 랭킹 (1~3개 유동적): {highlighter_ranking}
+    - 사용자 펜 랭킹 (1~3개 유동적): {pen_ranking}
     """
     
     user_prompt = """
