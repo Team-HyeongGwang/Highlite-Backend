@@ -107,35 +107,40 @@ def build_prompt(
     type_guide = {
         "multiple_choice": """4지선다 객관식 문제.
 - 정답은 반드시 1개
-- 오답 3개는 그럴싸하지만 명확히 틀린 것으로
+- 오답 3개는 그럴싸하지만 명확히 틀린 것으로 (단순히 틀린 것이 아니라 헷갈릴 수 있는 선지로)
 - 선지는 비슷한 길이로
-- options에 "①","②","③","④" 키로 보기 4개""",
+- 선지는 모두 같은 형태의 문장/단어로 구성
+- options에 "①","②","③","④" 키로 보기 4개
+- 정답이 특정 번호에 편중되지 않도록""",
 
         "ox": """O/X 문제.
 - 문장은 명확하게 참 또는 거짓이어야 함
-- 애매한 문장 금지
+- 애매하거나 부분적으로만 맞는 문장 금지
+- 원문의 핵심 개념을 정확히 반영
+- 단순 암기보다 이해를 묻는 문장으로
 - options는 null""",
 
         "fill_in_the_blank": """빈칸 채우기 문제.
 - 핵심 키워드 자리를 ___로 표시
-- 빈칸은 1~2개만
-- 정답은 키워드 그대로
+- 빈칸은 1개만
+- 정답은 키워드 그대로 (띄어쓰기 무시하고 채점할 예정)
+- 빈칸 앞뒤 문맥으로 정답을 유추할 수 있어야 함
 - options는 null""",
     }[question_type]
 
     feedback_guide = ""
     if feedback_type:
         feedback_map = {
-            "ambiguous":           "기존 문제가 애매하다는 피드백이 있었어. 더 명확하게 만들어.",
-            "wrong_answer":        "정답이 틀렸다는 피드백이 있었어. 정답을 다시 검토해.",
-            "unclear_explanation": "해설이 어렵다는 피드백이 있었어. 더 쉽게 써줘.",
-            "irrelevant":          "문제가 내용과 관련 없다는 피드백이 있었어. 원문에 더 충실하게 만들어.",
+            "ambiguous":           "기존 문제가 애매하다는 피드백이 있었어. 정답이 하나만 나오도록 더 명확하게 만들어.",
+            "wrong_answer":        "정답이 틀렸다는 피드백이 있었어. 원문을 다시 확인하고 정답을 수정해.",
+            "unclear_explanation": "해설이 이해가 안 된다는 피드백이 있었어. 원문 근거를 명확히 제시하며 더 쉽게 써줘.",
+            "irrelevant":          "문제가 내용과 관련 없다는 피드백이 있었어. 원문의 핵심 내용에 더 충실하게 만들어.",
         }
         feedback_guide = f"\n주의: {feedback_map.get(feedback_type, '')}"
 
     return f"""
 너는 대학교 시험 문제 출제 전문가야.
-아래 원문을 기반으로 문제를 만들어.
+아래 원문을 기반으로 학습 효과가 높은 문제를 만들어.
 
 [원문]
 {context_text}
@@ -146,12 +151,19 @@ def build_prompt(
 [문제 유형 및 조건]
 {type_guide}{feedback_guide}
 
+[좋은 문제의 기준]
+- 원문의 핵심 개념을 정확히 이해했는지 평가할 수 있는 문제
+- 단순 암기가 아닌 개념 이해를 묻는 문제
+- 문제만 읽어도 무엇을 묻는지 명확한 문제
+- 정답이 논란의 여지 없이 명확한 문제
+
 [주의사항]
 - 반드시 원문에 있는 내용만 다뤄
 - 원문에 없는 내용 추가 금지
-- 해설은 원문 근거를 포함해서 2~3문장으로
+- 해설은 원문의 근거를 포함해서 2~3문장으로
 - question_text에 "문제:", "보기:" 등의 접두어를 포함하지 마
 - question_text는 문제 내용만 순수하게 작성해
+- 해설에 정답 번호(①②③④)를 직접 언급하지 마
 
 반드시 아래 JSON 형식으로만 응답해. 다른 말은 하지 마.
 {{
@@ -224,7 +236,7 @@ async def _generate_questions_from_chunks(
     question_count: int,
     db: AsyncSession,
     quiz_group_id: uuid_lib.UUID = None,
-    round_number: int = None,  # ← 문제 생성 회차
+    round_number: int = None,
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
     generated: List[QuestionItem] = []
@@ -236,12 +248,25 @@ async def _generate_questions_from_chunks(
 
         pool_sorted = sorted(pool, key=lambda x: x[0].score, reverse=True)
 
-        selected = []
-        while len(selected) < target_count:
-            selected += pool_sorted
-        selected = selected[:target_count]
+        # ← 수정: target_count만큼 채울 때까지 반복
+        selected_base = []
+        while len(selected_base) < target_count:
+            selected_base += pool_sorted
+        selected_base = selected_base[:target_count]
 
-        for importance, chunk in selected:
+        # ← 수정: 최대 2배까지 후보 풀 확보 (걸러질 경우 재시도용)
+        pool_extended = []
+        while len(pool_extended) < target_count * 2:
+            pool_extended += pool_sorted
+        pool_extended = pool_extended[:target_count * 2]
+
+        generated_count = 0
+        pool_idx = 0
+
+        while generated_count < target_count and pool_idx < len(pool_extended):
+            importance, chunk = pool_extended[pool_idx]
+            pool_idx += 1
+
             question_type = get_question_type(priority)
             keywords = importance.keywords or []
             prompt = build_prompt(chunk.original_text, keywords, question_type)
@@ -273,24 +298,29 @@ async def _generate_questions_from_chunks(
                 except Exception:
                     continue
 
+            if not candidates:
+                continue  # 다음 chunk로 재시도
+
             approved = [c for c in candidates if c["review"]["is_approved"]]
             if approved:
                 best = max(approved, key=lambda x: x["review"]["quality_score"])
             else:
                 revised = [c for c in candidates if c["review"].get("suggested_revision_text")]
-                if not revised:
-                    continue
-                best = revised[0]
-                best["result"]["question_text"] = best["review"]["suggested_revision_text"]
-                if best["review"].get("suggested_revision_options"):
-                    best["result"]["options"] = best["review"]["suggested_revision_options"]
+                if revised:
+                    best = revised[0]
+                    best["result"]["question_text"] = best["review"]["suggested_revision_text"]
+                    if best["review"].get("suggested_revision_options"):
+                        best["result"]["options"] = best["review"]["suggested_revision_options"]
+                else:
+                    # ← 승인/수정안 없으면 점수 가장 높은 걸 그냥 사용 (누락 방지)
+                    best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
 
             result = best["result"]
 
             question = Question(
                 importance_id=importance.id,
                 quiz_group_id=quiz_group_id,
-                round_number=round_number,  # ← 회차 번호 저장
+                round_number=round_number,
                 question_type=question_type,
                 difficulty=str(priority),
                 question_text=result["question_text"],
@@ -315,6 +345,7 @@ async def _generate_questions_from_chunks(
                 page_number=chunk.page_number,
                 question_id=question.id,
             ))
+            generated_count += 1
 
     return generated
 
