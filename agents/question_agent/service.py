@@ -1,5 +1,6 @@
 import random, json, math, asyncio, httpx, anthropic, openai, os
 import uuid as uuid_lib
+import re
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -149,6 +150,8 @@ def build_prompt(
 - 반드시 원문에 있는 내용만 다뤄
 - 원문에 없는 내용 추가 금지
 - 해설은 원문 근거를 포함해서 2~3문장으로
+- question_text에 "문제:", "보기:" 등의 접두어를 포함하지 마
+- question_text는 문제 내용만 순수하게 작성해
 
 반드시 아래 JSON 형식으로만 응답해. 다른 말은 하지 마.
 {{
@@ -439,7 +442,12 @@ async def submit_answers_service(
         if not question:
             continue
 
-        is_correct = (submitted.strip() == question.answer.strip())
+        # 띄어쓰기 무시하고 채점
+        def normalize(text: str) -> str:
+            import re
+            return re.sub(r'\s+', '', text.strip())
+
+        is_correct = (normalize(submitted) == normalize(question.answer))
         results.append({
             "question_id": question_id,
             "submitted": submitted,
@@ -447,7 +455,7 @@ async def submit_answers_service(
             "is_correct": is_correct,
             "explanation": question.explanation,
         })
-
+        
     correct = sum(1 for r in results if r["is_correct"])
     total = len(results)
     score_percent = round((correct / total) * 100) if total > 0 else 0
