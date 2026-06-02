@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 import asyncio
-from agents.pdf_pipeline_agent.service import extract_from_pdf, run_pdf_pipeline
-from agents.pdf_pipeline_agent.schemas import parse_chunk
+from agents.retrieval_agent.service import extract_from_pdf, run_pdf_pipeline
+from agents.retrieval_agent.schemas import parse_chunk
 from agents.retrieval_agent.service import rag_chain
 
 from db.database import AsyncSessionLocal  # 프로젝트 DB 세션 팩토리
