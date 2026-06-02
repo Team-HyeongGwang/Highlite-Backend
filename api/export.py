@@ -14,6 +14,21 @@ load_dotenv()
 router = APIRouter()
 gpt_client = openai.AsyncOpenAI()
 
+_EMOJI_MAP = {
+    "yellow": "🟡", "red": "🔴", "orange": "🟠",
+    "green": "🟢", "blue": "🔵", "purple": "🟣", "black": "⚫",
+}
+
+_COLOR_MAP = {
+    "yellow": (1.0, 0.85, 0.0),
+    "red":    (0.9, 0.15, 0.15),
+    "orange": (1.0, 0.55, 0.0),
+    "green":  (0.1, 0.65, 0.1),
+    "blue":   (0.1, 0.35, 0.9),
+    "purple": (0.5, 0.1,  0.8),
+    "black":  (0.1, 0.1,  0.1),
+}
+
 
 @router.get("/summary")
 async def export_summary(
@@ -66,6 +81,11 @@ async def _synthesize_summary(title: str, rows) -> str:
             entry += f"내용: {importance.summary}\n"
         if importance.keywords:
             entry += f"키워드: {', '.join(importance.keywords)}\n"
+        color = None
+        if chunk.meta_data:
+            color = chunk.meta_data.get("highlight_color") or chunk.meta_data.get("handwriting_color")
+        if color:
+            entry += f"색상: {color}\n"
         chunks_data.append(entry)
 
     if not chunks_data:
@@ -84,6 +104,8 @@ async def _synthesize_summary(title: str, rows) -> str:
 - 각 개념 아래에 3~5문장으로 명확하게 설명
 - 마지막에 "## 핵심 키워드 정리" 섹션으로 전체 키워드를 한 줄씩 정리
 - 중요도 점수나 페이지 번호는 본문에 노출하지 말 것
+- 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 붙여주세요 (예: "[COLOR:yellow]## 개념명")
+- 색상 정보가 없는 섹션은 태그 없이 "## 개념명" 그대로 작성
 
 [분석 데이터]
 {context}
@@ -103,7 +125,15 @@ async def _synthesize_summary(title: str, rows) -> str:
 
 def _build_markdown(title: str, synthesized_text: str) -> str:
     lines = [f"# {title} 요약본", ""]
-    lines += synthesized_text.splitlines()
+    for line in synthesized_text.splitlines():
+        if line.startswith("[COLOR:") and "]" in line:
+            end = line.index("]")
+            color = line[7:end]
+            rest = line[end + 1:]
+            emoji = _EMOJI_MAP.get(color, "")
+            lines.append(f"{emoji} {rest}".strip() if emoji else rest)
+        else:
+            lines.append(line)
     lines.append("")
     return "\n".join(lines)
 
@@ -117,33 +147,46 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
 
     page, y = new_page()
 
-    def writebox(text: str, fontsize: int, rect_h: int, gap: int, indent: int = 0):
+    def writebox(text: str, fontsize: int, gap: int, indent: int = 0, color: tuple = None):
         nonlocal page, y
-        if y + rect_h + gap > H - MARGIN:
+        if H - MARGIN - y < fontsize * 2:
             page, y = new_page()
-        rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + rect_h)
-        page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
-        y += rect_h + gap
+        available_h = H - MARGIN - y
+        rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + available_h)
+        if color:
+            result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0, color=color)
+        else:
+            result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
+        used_h = available_h - max(0.0, result)
+        if color:
+            page.draw_line(
+                fitz.Point(MARGIN + indent - 5, y),
+                fitz.Point(MARGIN + indent - 5, y + used_h),
+                color=color, width=3,
+            )
+        y += used_h + gap
 
-    def est_h(text: str, fontsize: int, indent: int = 0) -> int:
-        chars_per_line = max(1, int((W - 2 * MARGIN - indent) / (fontsize * 0.6)))
-        lines = max(1, (len(text) + chars_per_line - 1) // chars_per_line)
-        return lines * int(fontsize * 1.5) + 6
-
-    writebox(f"{title} 요약본", fontsize=16, rect_h=28, gap=20)
+    writebox(f"{title} 요약본", fontsize=16, gap=20)
 
     for line in synthesized_text.splitlines():
         stripped = line.strip()
         if not stripped:
             y += 8
             continue
+
+        color_rgb = None
+        if stripped.startswith("[COLOR:") and "]" in stripped:
+            end = stripped.index("]")
+            color_rgb = _COLOR_MAP.get(stripped[7:end])
+            stripped = stripped[end + 1:].lstrip()
+
         if stripped.startswith("## "):
-            writebox(stripped[3:], fontsize=13, rect_h=24, gap=10)
+            writebox(stripped[3:], fontsize=13, gap=10, color=color_rgb)
         elif stripped.startswith("# "):
-            writebox(stripped[2:], fontsize=15, rect_h=26, gap=12)
+            writebox(stripped[2:], fontsize=15, gap=12)
         elif stripped.startswith("- "):
-            writebox(stripped, fontsize=10, rect_h=est_h(stripped, 10, 15), gap=4, indent=15)
+            writebox(stripped, fontsize=10, gap=4, indent=15)
         else:
-            writebox(stripped, fontsize=10, rect_h=est_h(stripped, 10, 10), gap=6, indent=10)
+            writebox(stripped, fontsize=10, gap=6, indent=10)
 
     return doc.tobytes()
