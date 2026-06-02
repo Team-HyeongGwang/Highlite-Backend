@@ -78,6 +78,8 @@ class Question(Base):
     
     # ← 추가: 한 번에 생성된 문제 묶음 ID
     quiz_group_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # ← 추가: 문제 시도 단계 (첫 시도, 재시도 등)
+    round_number = Column(Integer, nullable=True)
     # ← 추가: 문제 생성 시간
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
