@@ -12,7 +12,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, nullable=False)
-    provider = Column(String, default="local")  # 예: "google", "kakao", "naver"
+    provider = Column(String, default="local")
     profile_image_url = Column(String, nullable=True)
     join_date = Column(DateTime(timezone=True), server_default=func.now())
     
@@ -42,7 +42,7 @@ class DocumentChunk(Base):
     page_number = Column(Integer)
     original_text = Column(Text, nullable=False)
     meta_data = Column(JSON, nullable=True) 
-    embedding = Column(Vector(1536), nullable=True)  # OpenAI text-embedding-3-small
+    embedding = Column(Vector(1536), nullable=True)
 
     __table_args__ = (
         Index(
@@ -76,6 +76,13 @@ class Question(Base):
     id = Column(Integer, primary_key=True, index=True)
     importance_id = Column(Integer, ForeignKey("importance_results.id", ondelete="CASCADE"))
     
+    # ← 추가: 한 번에 생성된 문제 묶음 ID
+    quiz_group_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # ← 추가: 문제 시도 단계 (첫 시도, 재시도 등)
+    round_number = Column(Integer, nullable=True)
+    # ← 추가: 문제 생성 시간
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
     question_type = Column(String)
     difficulty = Column(String)
     question_text = Column(Text, nullable=False)
@@ -92,20 +99,17 @@ class QuizResult(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
     
-    # 💡 시험 점수 및 통계
+    # 어떤 문제 묶음에 대한 채점인지 연결
+    quiz_group_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 시험 점수 및 통계
     total_questions = Column(Integer, nullable=False, default=0)
     correct_count = Column(Integer, nullable=False, default=0)
     score_percent = Column(Integer, nullable=False, default=0) 
-    
-    # 💡 1회차(원본) 풀이인지, N회차(재생성) 풀이인지 추적
+    # 시도 단계 (첫 시도, 재시도 등)
     attempt_phase = Column(String, default="first_attempt") 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # 관계 설정 (Relationships)
+    # 답변과 채점 결과를 저장하는 관계
     answers = relationship("UserAnswer", back_populates="quiz_result", cascade="all, delete-orphan")
-    # owner = relationship("User", back_populates="quiz_results")
-    # document = relationship("Document", back_populates="quiz_results")
-
 
 class UserAnswer(Base):
     __tablename__ = "user_answers"
@@ -114,12 +118,10 @@ class UserAnswer(Base):
     quiz_result_id = Column(Integer, ForeignKey("quiz_results.id", ondelete="CASCADE"))
     question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"))
     
-    # 💡 유저의 응답 데이터
-    user_answer = Column(Text, nullable=True) # 사용자가 제출한 답 (빈칸/미입력 고려하여 True)
-    is_correct = Column(Boolean, nullable=False, default=False) # AI 재생성을 위한 핵심 O/X 지표
-    
+    # 사용자 응답 및 채점 결과
+    user_answer = Column(Text, nullable=True)
+    is_correct = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # 관계 설정 (Relationships)
+    
+    # 관계 설정
     quiz_result = relationship("QuizResult", back_populates="answers")
-    # question = relationship("Question", back_populates="user_answers")

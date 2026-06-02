@@ -18,7 +18,7 @@ from agents.retrieval_agent.router import router as retrieval_router
 from agents.personalized_agent.router import router as personalized_router
 from api.workflow import router as workflow_router
 from ranks.router import router as rank_router
-
+from agents.retrieval_agent.primer import run_primer
 
 from api.users import router as users_router
 from api.export import router as export_router
@@ -30,7 +30,10 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     print("✅ Supabase DB 테이블 생성 완료!")
     
-    yield 
+    await run_primer({})
+    print("✅ Primer 초기화 완료!")
+
+    yield
 
 # FastAPI 앱 객체 생성
 app = FastAPI(
