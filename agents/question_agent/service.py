@@ -1,22 +1,30 @@
 import random, json, math, asyncio, httpx, anthropic, openai, os
+import uuid as uuid_lib
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from db.models import Question, ImportanceResult, DocumentChunk, Document, User
 from agents.question_agent.schemas import (
+    DeleteQuizResultRequest,
+    DeleteQuizResultResponse,
     QuestionGenerateRequest,
     QuestionGenerateResponse,
     QuestionItem,
+    QuestionsByGroupResponse,
     RegenerateRequest,
     RegenerateResponse,
     SubmitAnswerRequest,
     SubmitAnswerResponse,
     AnswerResult,
     RegenerateFromWrongRequest,
+    QuestionListRequest,
+    QuestionListResponse,
+    DocumentItem,
+    AttemptItem,
 )
 
 claude_client = anthropic.AsyncAnthropic()
@@ -212,6 +220,8 @@ async def _generate_questions_from_chunks(
     chunks_by_priority: dict,
     question_count: int,
     db: AsyncSession,
+    quiz_group_id: uuid_lib.UUID = None,
+    round_number: int = None,  # ← 문제 생성 회차
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
     generated: List[QuestionItem] = []
@@ -276,6 +286,8 @@ async def _generate_questions_from_chunks(
 
             question = Question(
                 importance_id=importance.id,
+                quiz_group_id=quiz_group_id,
+                round_number=round_number,  # ← 회차 번호 저장
                 question_type=question_type,
                 difficulty=str(priority),
                 question_text=result["question_text"],
@@ -298,6 +310,7 @@ async def _generate_questions_from_chunks(
                 priority=priority,
                 source_type=source_type,
                 page_number=chunk.page_number,
+                question_id=question.id,
             ))
 
     return generated
@@ -337,15 +350,36 @@ async def generate_questions_service(
         )
         chunks_by_priority[priority].append((importance, chunk))
 
+    quiz_group_id = uuid_lib.uuid4()
+
+    # ← 문제 생성 전 현재 document의 max round_number 조회
+    sibling_stmt = select(Document.id).where(Document.group_id == document.group_id)
+    sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
+
+    max_round_stmt = (
+        select(func.max(Question.round_number))
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .where(DocumentChunk.document_id.in_(sibling_ids))
+    )
+    max_round = (await db.execute(max_round_stmt)).scalar() or 0
+    next_round = max_round + 1
+
     generated = await _generate_questions_from_chunks(
         group_id=request.group_id,
         chunks_by_priority=chunks_by_priority,
         question_count=request.question_count,
         db=db,
+        quiz_group_id=quiz_group_id,
+        round_number=next_round,  # ← 회차 번호 전달
     )
 
     await db.commit()
-    return QuestionGenerateResponse(questions=generated)
+    return QuestionGenerateResponse(
+        document_id=document.id,
+        quiz_group_id=quiz_group_id,
+        questions=generated
+    )
 
 # ────────────────────────────────────────
 # 2. 피드백 기반 재생성 서비스
@@ -414,7 +448,6 @@ async def submit_answers_service(
             "explanation": question.explanation,
         })
 
-    # QuizResult 먼저 저장
     correct = sum(1 for r in results if r["is_correct"])
     total = len(results)
     score_percent = round((correct / total) * 100) if total > 0 else 0
@@ -422,15 +455,15 @@ async def submit_answers_service(
     quiz_result = QuizResult(
         user_id=request.user_id,
         document_id=request.document_id,
+        quiz_group_id=request.quiz_group_id,
         total_questions=total,
         correct_count=correct,
         score_percent=score_percent,
         attempt_phase=request.attempt_phase,
     )
     db.add(quiz_result)
-    await db.flush()  # quiz_result.id 받기 위해
+    await db.flush()
 
-    # UserAnswer 저장
     for r in results:
         answer = UserAnswer(
             quiz_result_id=quiz_result.id,
@@ -467,7 +500,6 @@ async def regenerate_from_wrong_service(
 ) -> QuestionGenerateResponse:
     from db.models import UserAnswer, QuizResult
 
-    # 1) 해당 유저 + 해당 문서의 오답 question_id 가져오기
     wrong_stmt = (
         select(UserAnswer.question_id)
         .join(QuizResult, UserAnswer.quiz_result_id == QuizResult.id)
@@ -478,7 +510,6 @@ async def regenerate_from_wrong_service(
     wrong_rows = (await db.execute(wrong_stmt)).all()
     wrong_question_ids = [r[0] for r in wrong_rows]
 
-    # 2) 오답 chunk_id 가져오기
     wrong_chunk_ids = set()
     if wrong_question_ids:
         stmt = (
@@ -490,7 +521,6 @@ async def regenerate_from_wrong_service(
         wrong_chunk_rows = (await db.execute(stmt)).all()
         wrong_chunk_ids = {r[0] for r in wrong_chunk_rows}
 
-    # 3) 전체 chunks 가져오기
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
@@ -502,14 +532,12 @@ async def regenerate_from_wrong_service(
     if not rows:
         raise ValueError("해당 문서의 중요도 분석 결과가 없습니다.")
 
-    # 4) User ranking 가져오기
     document = rows[0][2]
     user_q = await db.execute(select(User).where(User.id == document.user_id))
     user = user_q.scalar_one_or_none()
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
 
-    # 5) 오답 chunk는 1순위로 올리기
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
         if chunk.id in wrong_chunk_ids:
@@ -522,12 +550,281 @@ async def regenerate_from_wrong_service(
             )
         chunks_by_priority[priority].append((importance, chunk))
 
+    quiz_group_id = uuid_lib.uuid4()
+
+    # ← 문제 재생성 전 현재 document의 max round_number 조회
+    sibling_stmt = select(Document.id).where(Document.group_id == document.group_id)
+    sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
+
+    max_round_stmt = (
+        select(func.max(Question.round_number))
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .where(DocumentChunk.document_id.in_(sibling_ids))
+    )
+    max_round = (await db.execute(max_round_stmt)).scalar() or 0
+    next_round = max_round + 1
+
     generated = await _generate_questions_from_chunks(
         group_id=request.group_id,
         chunks_by_priority=chunks_by_priority,
         question_count=request.question_count,
         db=db,
+        quiz_group_id=quiz_group_id,
+        round_number=next_round,  # ← 회차 번호 전달
     )
 
     await db.commit()
-    return QuestionGenerateResponse(questions=generated)
+    return QuestionGenerateResponse(
+        document_id=document.id,
+        quiz_group_id=quiz_group_id,
+        questions=generated
+    )
+
+# ────────────────────────────────────────
+# 5. 문서별 생성 문제 리스트 조회
+# ────────────────────────────────────────
+async def get_question_list_service(
+    request: QuestionListRequest,
+    db: AsyncSession,
+) -> QuestionListResponse:
+    from db.models import QuizResult
+
+    doc_stmt = select(Document).where(Document.user_id == request.user_id)
+    if request.document_id:
+        doc_stmt = doc_stmt.where(Document.id == request.document_id)
+
+    doc_rows = (await db.execute(doc_stmt)).scalars().all()
+
+    if not doc_rows:
+        return QuestionListResponse(documents=[])
+
+    # group_id 기준으로 중복 제거
+    seen_group_ids = set()
+    unique_docs = []
+    for doc in doc_rows:
+        g = str(doc.group_id)
+        if g not in seen_group_ids:
+            seen_group_ids.add(g)
+            unique_docs.append(doc)
+
+    documents = []
+    for doc in unique_docs:
+        # 같은 group_id의 document_id 전체 수집
+        sibling_stmt = select(Document.id).where(Document.group_id == doc.group_id)
+        sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
+
+        # quiz_group별로 그룹핑 (sibling document_id 전체 대상)
+        group_stmt = (
+            select(
+                Question.quiz_group_id,
+                Question.round_number,
+                func.min(Question.created_at).label("created_at"),
+                func.count(Question.id).label("q_num")
+            )
+            .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+            .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+            .where(DocumentChunk.document_id.in_(sibling_ids))
+            .where(Question.quiz_group_id.isnot(None))
+            .group_by(Question.quiz_group_id, Question.round_number)
+            .order_by(Question.round_number.desc())
+        )
+        group_rows = (await db.execute(group_stmt)).all()
+
+        attempts = []
+        for group in group_rows:
+            qr_stmt = (
+                select(QuizResult)
+                .where(QuizResult.document_id.in_(sibling_ids))
+                .where(QuizResult.quiz_group_id == group.quiz_group_id)
+                .order_by(QuizResult.created_at.desc())
+                .limit(1)
+            )
+            qr = (await db.execute(qr_stmt)).scalar_one_or_none()
+
+            attempts.append(AttemptItem(
+                quiz_result_id=qr.id if qr else None,
+                quiz_group_id=group.quiz_group_id,
+                round=group.round_number if group.round_number else 1,
+                created_at=group.created_at.isoformat(),
+                q_num=group.q_num,
+                score=qr.score_percent if qr and qr.correct_count > 0 else None,
+                attempt_phase=qr.attempt_phase if qr else None,
+            ))
+
+        documents.append(DocumentItem(
+            document_id=doc.id,
+            group_id=doc.group_id,
+            title=doc.title,
+            upload_date=doc.created_at.isoformat() if doc.created_at else "",
+            total_count=len(group_rows),
+            attempts=attempts,
+        ))
+
+    return QuestionListResponse(documents=documents)
+
+# ────────────────────────────────────────
+# 6. 회차 삭제
+# ────────────────────────────────────────
+async def delete_quiz_results_service(
+    request: DeleteQuizResultRequest,
+    db: AsyncSession,
+) -> DeleteQuizResultResponse:
+    from db.models import UserAnswer, QuizResult
+    from uuid import UUID as UUIDType
+
+    deleted_count = 0
+
+    # quiz_group_id 기준으로 questions + quiz_results + user_answers 삭제
+    for group_id_str in request.quiz_group_ids:
+        group_id = UUIDType(group_id_str)
+
+        # 해당 그룹의 quiz_results 조회
+        qr_stmt = select(QuizResult).where(QuizResult.quiz_group_id == group_id)
+        quiz_results = (await db.execute(qr_stmt)).scalars().all()
+
+        # 본인 데이터인지 검증
+        for qr in quiz_results:
+            if qr.user_id != request.user_id:
+                raise PermissionError("삭제 권한이 없습니다.")
+            await db.delete(qr)
+
+        # 해당 그룹의 questions 삭제
+        q_stmt = select(Question).where(Question.quiz_group_id == group_id)
+        questions = (await db.execute(q_stmt)).scalars().all()
+        for q in questions:
+            await db.delete(q)
+
+        deleted_count += 1
+
+    await db.commit()
+
+    return DeleteQuizResultResponse(
+        deleted_count=deleted_count,
+        message="성공적으로 삭제되었습니다."
+    )
+
+# ────────────────────────────────────────
+# 7. quiz_group_id로 문제 조회
+# ────────────────────────────────────────
+async def get_questions_by_group_service(
+    quiz_group_id: str,
+    db: AsyncSession,
+) -> QuestionsByGroupResponse:
+    from uuid import UUID as UUIDType
+
+    stmt = (
+        select(Question, ImportanceResult, DocumentChunk)
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .where(Question.quiz_group_id == UUIDType(quiz_group_id))
+        .order_by(Question.id.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+
+    if not rows:
+        raise ValueError("해당 문제 그룹을 찾을 수 없습니다.")
+
+    questions = []
+    for idx, (question, importance, chunk) in enumerate(rows):
+        source_type = get_source_type(chunk.meta_data or [])
+        priority = int(question.difficulty) if question.difficulty else 3
+        options = question.options if question.options else None
+
+        questions.append(QuestionItem(
+            chunk_id=chunk.id,
+            question_id=question.id,
+            question_type=question.question_type,
+            question_text=question.question_text,
+            options=options,
+            answer=question.answer,
+            explanation=question.explanation,
+            question_number=idx + 1,
+            priority=priority,
+            source_type=source_type,
+            page_number=chunk.page_number,
+        ))
+
+    return QuestionsByGroupResponse(
+        quiz_group_id=UUIDType(quiz_group_id),
+        questions=questions,
+    )
+
+# ────────────────────────────────────────
+# 8. 오답 조회
+# ────────────────────────────────────────
+async def get_wrong_answers_service(
+    quiz_result_id: int,
+    db: AsyncSession,
+):
+    from db.models import UserAnswer
+    from agents.question_agent.schemas import WrongAnswerItem, WrongAnswersResponse
+
+    stmt = (
+        select(UserAnswer, Question, ImportanceResult, DocumentChunk)
+        .join(Question, UserAnswer.question_id == Question.id)
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .where(UserAnswer.quiz_result_id == quiz_result_id)
+        .where(UserAnswer.is_correct == False)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    wrong_answers = []
+    for user_answer, question, importance, chunk in rows:
+        priority = int(question.difficulty) if question.difficulty else 3
+        wrong_answers.append(WrongAnswerItem(
+            question_id=question.id,
+            question_type=question.question_type,
+            question_text=question.question_text,
+            options=question.options,
+            answer=question.answer,
+            explanation=question.explanation,
+            submitted_answer=user_answer.user_answer or "",
+            page_number=chunk.page_number,
+            priority=priority,
+        ))
+
+    return WrongAnswersResponse(
+        quiz_result_id=quiz_result_id,
+        wrong_answers=wrong_answers,
+    )
+
+# ────────────────────────────────────────
+# 9. 채점 결과 상세 조회
+# ────────────────────────────────────────
+async def get_quiz_result_detail_service(
+    quiz_result_id: int,
+    db: AsyncSession,
+):
+    from db.models import UserAnswer, QuizResult
+    from agents.question_agent.schemas import QuizResultDetailResponse
+
+    qr_stmt = select(QuizResult).where(QuizResult.id == quiz_result_id)
+    qr = (await db.execute(qr_stmt)).scalar_one_or_none()
+    if not qr:
+        raise ValueError("채점 결과를 찾을 수 없습니다.")
+
+    ua_stmt = (
+        select(UserAnswer, Question)
+        .join(Question, UserAnswer.question_id == Question.id)
+        .where(UserAnswer.quiz_result_id == quiz_result_id)
+    )
+    rows = (await db.execute(ua_stmt)).all()
+
+    results = []
+    for user_answer, question in rows:
+        results.append(AnswerResult(
+            question_id=question.id,
+            submitted_answer=user_answer.user_answer or "",
+            correct_answer=question.answer,
+            is_correct=user_answer.is_correct,
+            explanation=question.explanation,
+        ))
+
+    return QuizResultDetailResponse(
+        total=qr.total_questions,
+        correct=qr.correct_count,
+        wrong=qr.total_questions - qr.correct_count,
+        results=results,
+    )
