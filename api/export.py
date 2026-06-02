@@ -90,13 +90,15 @@ async def _synthesize_summary(title: str, rows) -> str:
 
 위 데이터를 참고하여 학습 요약 노트를 한국어로 작성해주세요."""
 
-    response = await gpt_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-    )
-
-    return response.choices[0].message.content
+    try:
+        response = await gpt_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        return response.choices[0].message.content
+    except Exception:
+        raise HTTPException(status_code=502, detail="요약 생성 중 AI 서버 오류가 발생했습니다.")
 
 
 def _build_markdown(title: str, synthesized_text: str) -> str:
@@ -123,6 +125,11 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
         page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
         y += rect_h + gap
 
+    def est_h(text: str, fontsize: int, indent: int = 0) -> int:
+        chars_per_line = max(1, int((W - 2 * MARGIN - indent) / (fontsize * 0.6)))
+        lines = max(1, (len(text) + chars_per_line - 1) // chars_per_line)
+        return lines * int(fontsize * 1.5) + 6
+
     writebox(f"{title} 요약본", fontsize=16, rect_h=28, gap=20)
 
     for line in synthesized_text.splitlines():
@@ -135,8 +142,8 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
         elif stripped.startswith("# "):
             writebox(stripped[2:], fontsize=15, rect_h=26, gap=12)
         elif stripped.startswith("- "):
-            writebox(stripped, fontsize=10, rect_h=60, gap=4, indent=15)
+            writebox(stripped, fontsize=10, rect_h=est_h(stripped, 10, 15), gap=4, indent=15)
         else:
-            writebox(stripped, fontsize=10, rect_h=60, gap=6, indent=10)
+            writebox(stripped, fontsize=10, rect_h=est_h(stripped, 10, 10), gap=6, indent=10)
 
     return doc.tobytes()
