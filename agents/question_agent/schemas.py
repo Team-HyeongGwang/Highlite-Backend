@@ -118,6 +118,7 @@ class QuestionsByGroupResponse(BaseModel):
 
 class WrongAnswerItem(BaseModel):
     question_id: int
+    question_number: int # 추가
     question_type: str
     question_text: str
     options: Optional[Dict[str, str]] = None

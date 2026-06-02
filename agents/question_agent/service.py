@@ -781,8 +781,18 @@ async def get_wrong_answers_service(
     wrong_answers = []
     for user_answer, question, importance, chunk in rows:
         priority = int(question.difficulty) if question.difficulty else 3
+
+        # ← quiz_group 내 question_number 계산
+        order_stmt = (
+            select(func.count(Question.id))
+            .where(Question.quiz_group_id == question.quiz_group_id)
+            .where(Question.id <= question.id)
+        )
+        question_number = (await db.execute(order_stmt)).scalar() or 0
+
         wrong_answers.append(WrongAnswerItem(
             question_id=question.id,
+            question_number=question_number,  # ← 추가
             question_type=question.question_type,
             question_text=question.question_text,
             options=question.options,
