@@ -3,11 +3,16 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import fitz  # PyMuPDF
+import openai
+from dotenv import load_dotenv
 
 from db.database import get_db
 from db.models import ImportanceResult, DocumentChunk, Document
 
+load_dotenv()
+
 router = APIRouter()
+gpt_client = openai.AsyncOpenAI()
 
 
 @router.get("/summary")
@@ -31,15 +36,17 @@ async def export_summary(
     title = rows[0][2].title
     safe_title = title.replace(" ", "_")
 
+    synthesized = await _synthesize_summary(title, rows)
+
     if format == "md":
-        content = _build_markdown(title, rows)
+        content = _build_markdown(title, synthesized)
         return Response(
             content=content.encode("utf-8"),
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{safe_title}_summary.md"'},
         )
     elif format == "pdf":
-        pdf_bytes = _build_pdf(title, rows)
+        pdf_bytes = _build_pdf(title, synthesized)
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -49,30 +56,57 @@ async def export_summary(
         raise HTTPException(status_code=400, detail="format은 'md' 또는 'pdf'만 지원합니다.")
 
 
-def _build_markdown(title: str, rows) -> str:
-    lines = [f"# {title} 요약본", ""]
-    current_page = None
-
+async def _synthesize_summary(title: str, rows) -> str:
+    chunks_data = []
     for importance, chunk, _ in rows:
-        if not importance.summary and not importance.keywords:
+        if importance.score < 4.0:
             continue
-
-        if chunk.page_number != current_page:
-            current_page = chunk.page_number
-            lines += [f"## {current_page}페이지", ""]
-
+        entry = f"[{chunk.page_number}페이지 / 중요도 {importance.score:.1f}]\n"
         if importance.summary:
-            lines += [importance.summary, ""]
-
+            entry += f"내용: {importance.summary}\n"
         if importance.keywords:
-            lines += [f"**핵심 키워드:** {' · '.join(importance.keywords)}", ""]
+            entry += f"키워드: {', '.join(importance.keywords)}\n"
+        chunks_data.append(entry)
 
-        lines += [f"*중요도 {importance.score:.1f}/10*", "", "---", ""]
+    if not chunks_data:
+        return "요약할 내용이 없습니다."
 
+    context = "\n".join(chunks_data)
+
+    prompt = f"""당신은 대학생 및 수험생을 위한 학습 요약 노트를 작성하는 전문 튜터입니다.
+아래는 '{title}' 교재를 AI가 분석한 중요 개념 데이터입니다.
+이 데이터를 바탕으로 학습자가 실제로 읽고 공부할 수 있는 체계적인 요약 노트를 작성해주세요.
+
+[작성 규칙]
+- 중요도 높은 개념을 중심으로 핵심 내용을 서술형으로 설명
+- 단순히 키워드 나열이 아닌, 개념 간의 연관성과 맥락을 포함
+- 섹션을 나눌 때는 "## 개념명" 형식 사용
+- 각 개념 아래에 3~5문장으로 명확하게 설명
+- 마지막에 "## 핵심 키워드 정리" 섹션으로 전체 키워드를 한 줄씩 정리
+- 중요도 점수나 페이지 번호는 본문에 노출하지 말 것
+
+[분석 데이터]
+{context}
+
+위 데이터를 참고하여 학습 요약 노트를 한국어로 작성해주세요."""
+
+    response = await gpt_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+
+    return response.choices[0].message.content
+
+
+def _build_markdown(title: str, synthesized_text: str) -> str:
+    lines = [f"# {title} 요약본", ""]
+    lines += synthesized_text.splitlines()
+    lines.append("")
     return "\n".join(lines)
 
 
-def _build_pdf(title: str, rows) -> bytes:
+def _build_pdf(title: str, synthesized_text: str) -> bytes:
     W, H, MARGIN = 595, 842, 50
     doc = fitz.open()
 
@@ -89,23 +123,20 @@ def _build_pdf(title: str, rows) -> bytes:
         page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
         y += rect_h + gap
 
-    writebox(f"{title} 요약본", fontsize=16, rect_h=24, gap=16)
+    writebox(f"{title} 요약본", fontsize=16, rect_h=28, gap=20)
 
-    current_page_num = None
-    for importance, chunk, _ in rows:
-        if not importance.summary and not importance.keywords:
+    for line in synthesized_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            y += 8
             continue
-
-        if chunk.page_number != current_page_num:
-            current_page_num = chunk.page_number
-            writebox(f"[ {current_page_num}페이지 ]", fontsize=12, rect_h=20, gap=8)
-
-        if importance.summary:
-            writebox(importance.summary, fontsize=10, rect_h=48, gap=4, indent=10)
-
-        if importance.keywords:
-            writebox("키워드: " + " · ".join(importance.keywords), fontsize=9, rect_h=16, gap=4, indent=10)
-
-        writebox(f"중요도 {importance.score:.1f}/10", fontsize=8, rect_h=14, gap=12, indent=10)
+        if stripped.startswith("## "):
+            writebox(stripped[3:], fontsize=13, rect_h=24, gap=10)
+        elif stripped.startswith("# "):
+            writebox(stripped[2:], fontsize=15, rect_h=26, gap=12)
+        elif stripped.startswith("- "):
+            writebox(stripped, fontsize=10, rect_h=60, gap=4, indent=15)
+        else:
+            writebox(stripped, fontsize=10, rect_h=60, gap=6, indent=10)
 
     return doc.tobytes()
