@@ -1,5 +1,6 @@
 import random, json, math, asyncio, httpx, anthropic, openai, os
 import uuid as uuid_lib
+import re
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -104,37 +105,42 @@ def build_prompt(
     feedback_type: Optional[str] = None,
 ) -> str:
     type_guide = {
-        "multiple_choice": """4지선다 객관식 문제.
-- 정답은 반드시 1개
-- 오답 3개는 그럴싸하지만 명확히 틀린 것으로
-- 선지는 비슷한 길이로
-- options에 "①","②","③","④" 키로 보기 4개""",
+        "multiple_choice": """[4지선다 객관식 문제 조건]
+- 정답은 반드시 논란의 여지가 없는 1개여야 합니다.
+- 오답 선지(3개)는 아래의 '매력적 오답 제조 매커니즘' 중 적어도 2가지를 활용해 구성하세요:
+  1. 원문의 원인과 결과를 뒤바꾼 선지
+  2. 원문의 특정 키워드를 유사해 보이는 다른 오개념과 교묘하게 결합한 선지
+  3. 지나친 일반화(예: 반드시, 항상, 전혀 등)를 포함하여 오류를 만든 선지
+- 모든 선지는 문장 구조와 길이를 최대한 유사하게 맞춰 시각적 힌트를 배제하세요.
+- options에 "①","②","③","④" 키로 보기 4개를 제공하세요.""",
 
-        "ox": """O/X 문제.
-- 문장은 명확하게 참 또는 거짓이어야 함
-- 애매한 문장 금지
-- options는 null""",
+        "ox": """[O/X 문제 조건]
+- 문장은 단 한 줄로도 명확하게 참(O) 또는 거짓(X)이 판별되어야 합니다.
+- 단순히 원문 문장에 '아니다'만 붙인 유치한 오답 문장은 금지합니다.
+- 개념의 핵심 전제나 조건을 살짝 비틀어 깊은 이해를 요구하는 문장으로 구성하세요.
+- **[경고]** question_text에 "문제:", "Q.", "다음 문장의 참/거짓을 고르시오" 같은 안내 문구를 절대 넣지 마세요. 오직 판별 대상이 되는 본문 문장 한 줄만 순수하게 넣어야 합니다.
+- options는 null로 설정하세요.""",
 
-        "fill_in_the_blank": """빈칸 채우기 문제.
-- 핵심 키워드 자리를 ___로 표시
-- 빈칸은 1~2개만
-- 정답은 키워드 그대로
-- options는 null""",
+        "fill_in_the_blank": """[빈칸 채우기 문제 조건]
+- 원문에서 가장 학술적으로 중요한 개념/단어 자리를 딱 1개만 '_____'로 표시하세요.
+- 빈칸 바로 뒤에 붙는 조사(은/는, 이/가, 을/를)를 통해 정답의 자음/모음 힌트가 유추되지 않도록 문장을 매끄럽게 다듬으세요.
+- 단순히 앞뒤 단어 암기로 푸는 것이 아니라, 전체 문맥을 이해해야만 빈칸을 유추할 수 있도록 출제하세요.
+- **참고**: 채점 시에는 사용자가 입력한 값의 띄어쓰기를 무시하고 채점하므로, answer에는 원문 기준 정답 단어를 공백 포함 그대로 제공하면 됩니다.
+- options는 null로 설정하세요.""",
     }[question_type]
 
     feedback_guide = ""
     if feedback_type:
         feedback_map = {
-            "ambiguous":           "기존 문제가 애매하다는 피드백이 있었어. 더 명확하게 만들어.",
-            "wrong_answer":        "정답이 틀렸다는 피드백이 있었어. 정답을 다시 검토해.",
-            "unclear_explanation": "해설이 어렵다는 피드백이 있었어. 더 쉽게 써줘.",
-            "irrelevant":          "문제가 내용과 관련 없다는 피드백이 있었어. 원문에 더 충실하게 만들어.",
+            "ambiguous":           "기존 문제가 애매하다는 피드백이 있었습니다. 정답이 복수 개가 되거나 해석의 여지가 갈리지 않도록 논리 구조를 더 명확하게 다듬으세요.",
+            "wrong_answer":        "기존 문제의 정답이 틀렸다는 피드백이 있었습니다. 원문을 철저히 재검토하여 '원문 근거 기준'으로 완벽한 정답을 다시 지정하세요.",
+            "unclear_explanation": "해설이 이해가 안 된다는 피드백이 있었습니다. 초등학생도 이해할 수 있을 만큼 원문의 근거 문장을 명확히 인용하며 쉽게 풀어쓰세요.",
+            "irrelevant":          "문제가 내용과 관련 없다는 피드백이 있었습니다. 지엽적인 단어 장난이 아닌, 원문의 핵심 줄기와 거시적 맥락에 충실한 문제를 만드세요.",
         }
-        feedback_guide = f"\n주의: {feedback_map.get(feedback_type, '')}"
+        feedback_guide = f"\n[중요 피드백 반영 지시]\n주의: {feedback_map.get(feedback_type, '')}"
 
-    return f"""
-너는 대학교 시험 문제 출제 전문가야.
-아래 원문을 기반으로 문제를 만들어.
+    return f"""너는 출제 오류율 0%를 자랑하는 대학교 전공 시험 출제위원이야.
+제공된 [원문]과 [핵심 키워드]를 바탕으로, 단순 암기(Recall)를 넘어 개념 적용 및 분석 능력을 평가할 수 있는 고품격 문제를 출제해줘.
 
 [원문]
 {context_text}
@@ -142,22 +148,22 @@ def build_prompt(
 [핵심 키워드]
 {', '.join(keywords)}
 
-[문제 유형 및 조건]
 {type_guide}{feedback_guide}
 
-[주의사항]
-- 반드시 원문에 있는 내용만 다뤄
-- 원문에 없는 내용 추가 금지
-- 해설은 원문 근거를 포함해서 2~3문장으로
+[출제 대원칙 - 필수 준수]
+1. 엄격한 원문 근거주의: 오직 제공된 [원문]에 명시된 사실과 논리만을 바탕으로 출제하세요. 원문 외 지식이나 상식에 의존해야 풀 수 있는 문제는 절대 금지합니다.
+2. 질문의 명확성: 문제 텍스트 자체만 읽어도 무엇을 묻는지 학습자가 한 번에 파악할 수 있어야 합니다. ("다음 중 맞는 것은?" 같은 불명확한 질문보다는 "~의 특징으로 올바른 것은?" 처럼 명확하게 작성)
+3. 해설 퀄리티 및 길이 제한: 해설은 정답의 이유와 오답이 틀린 이유를 원문 근거를 바탕으로 **최대 3문장 이내**로 간결하게 작성하세요. 특히 객관식(multiple_choice) 문제의 경우, 해설 내에서 각 선지를 설명할 때 반드시 **①, ②, ③, ④ 기호를 명확히 언급**하며 설명해야 합니다.
+4. 포맷팅 제한: 모든 문제 유형의 question_text에 "문제:", "Q.", "보기:", "지문:" 등의 불필요한 접두어나 안내어를 절대 포함하지 마세요. (특히 OX 문제에서 이 실수가 잦으니 극도로 주의하세요.)
 
-반드시 아래 JSON 형식으로만 응답해. 다른 말은 하지 마.
+반드시 아래의 정해진 JSON 포맷으로만 응답하세요. Markdown 블록(```json)을 포함하지 말고 순수 JSON 문자열만 출력해야 합니다.
+
 {{
-  "question_text": "문제 텍스트",
-  "options": {{"①": "...", "②": "...", "③": "...", "④": "..."}},
-  "answer": "정답",
-  "explanation": "해설"
+  "question_text": "순수한 문제 텍스트 (접두어 절대 금지)",
+  "options": {{"①": "선지1", "②": "선지2", "③": "선지3", "④": "선지4"}},
+  "answer": "정답 텍스트 (객관식인 경우 '①' 혹은 '②' 형태의 키값 / OX인 경우 'O' 또는 'X' / 빈칸인 경우 '정답단어')",
+  "explanation": "최대 3문장 이내의 근거 중심 해설 (객관식은 기호 필수 언급)"
 }}
-(OX/빈칸 문제면 options는 null로)
 """
 
 # ────────────────────────────────────────
@@ -172,7 +178,11 @@ async def call_claude(prompt: str) -> dict:
     )
     raw = message.content[0].text
     clean = raw.replace("```json", "").replace("```", "").strip()
-    return json.loads(clean)
+    result = json.loads(clean)
+    # 방어 코드: "문제:" 접두어 제거
+    if "question_text" in result:
+        result["question_text"] = result["question_text"].removeprefix("문제:").strip()
+    return result
 
 # ────────────────────────────────────────
 # GPT 호출
@@ -186,7 +196,11 @@ async def call_gpt(prompt: str) -> dict:
     )
     raw = response.choices[0].message.content
     clean = raw.replace("```json", "").replace("```", "").strip()
-    return json.loads(clean)
+    result = json.loads(clean)
+    # 방어 코드: "문제:" 접두어 제거
+    if "question_text" in result:
+        result["question_text"] = result["question_text"].removeprefix("문제:").strip()
+    return result
 
 # ────────────────────────────────────────
 # 평가 Agent 호출
@@ -221,7 +235,7 @@ async def _generate_questions_from_chunks(
     question_count: int,
     db: AsyncSession,
     quiz_group_id: uuid_lib.UUID = None,
-    round_number: int = None,  # ← 문제 생성 회차
+    round_number: int = None,
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
     generated: List[QuestionItem] = []
@@ -233,12 +247,18 @@ async def _generate_questions_from_chunks(
 
         pool_sorted = sorted(pool, key=lambda x: x[0].score, reverse=True)
 
-        selected = []
-        while len(selected) < target_count:
-            selected += pool_sorted
-        selected = selected[:target_count]
+        pool_extended = []
+        while len(pool_extended) < target_count * 2:
+            pool_extended += pool_sorted
+        pool_extended = pool_extended[:target_count * 2]
 
-        for importance, chunk in selected:
+        generated_count = 0
+        pool_idx = 0
+
+        while generated_count < target_count and pool_idx < len(pool_extended):
+            importance, chunk = pool_extended[pool_idx]
+            pool_idx += 1
+
             question_type = get_question_type(priority)
             keywords = importance.keywords or []
             prompt = build_prompt(chunk.original_text, keywords, question_type)
@@ -270,24 +290,28 @@ async def _generate_questions_from_chunks(
                 except Exception:
                     continue
 
+            if not candidates:
+                continue
+
             approved = [c for c in candidates if c["review"]["is_approved"]]
             if approved:
                 best = max(approved, key=lambda x: x["review"]["quality_score"])
             else:
                 revised = [c for c in candidates if c["review"].get("suggested_revision_text")]
-                if not revised:
-                    continue
-                best = revised[0]
-                best["result"]["question_text"] = best["review"]["suggested_revision_text"]
-                if best["review"].get("suggested_revision_options"):
-                    best["result"]["options"] = best["review"]["suggested_revision_options"]
+                if revised:
+                    best = revised[0]
+                    best["result"]["question_text"] = best["review"]["suggested_revision_text"]
+                    if best["review"].get("suggested_revision_options"):
+                        best["result"]["options"] = best["review"]["suggested_revision_options"]
+                else:
+                    best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
 
             result = best["result"]
 
             question = Question(
                 importance_id=importance.id,
                 quiz_group_id=quiz_group_id,
-                round_number=round_number,  # ← 회차 번호 저장
+                round_number=round_number,
                 question_type=question_type,
                 difficulty=str(priority),
                 question_text=result["question_text"],
@@ -312,6 +336,7 @@ async def _generate_questions_from_chunks(
                 page_number=chunk.page_number,
                 question_id=question.id,
             ))
+            generated_count += 1
 
     return generated
 
@@ -352,7 +377,6 @@ async def generate_questions_service(
 
     quiz_group_id = uuid_lib.uuid4()
 
-    # ← 문제 생성 전 현재 document의 max round_number 조회
     sibling_stmt = select(Document.id).where(Document.group_id == document.group_id)
     sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
 
@@ -371,7 +395,7 @@ async def generate_questions_service(
         question_count=request.question_count,
         db=db,
         quiz_group_id=quiz_group_id,
-        round_number=next_round,  # ← 회차 번호 전달
+        round_number=next_round,
     )
 
     await db.commit()
@@ -439,7 +463,11 @@ async def submit_answers_service(
         if not question:
             continue
 
-        is_correct = (submitted.strip() == question.answer.strip())
+        # 띄어쓰기 무시하고 채점
+        def normalize(text: str) -> str:
+            return re.sub(r'\s+', '', text.strip())
+
+        is_correct = (normalize(submitted) == normalize(question.answer))
         results.append({
             "question_id": question_id,
             "submitted": submitted,
@@ -552,7 +580,6 @@ async def regenerate_from_wrong_service(
 
     quiz_group_id = uuid_lib.uuid4()
 
-    # ← 문제 재생성 전 현재 document의 max round_number 조회
     sibling_stmt = select(Document.id).where(Document.group_id == document.group_id)
     sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
 
@@ -571,7 +598,7 @@ async def regenerate_from_wrong_service(
         question_count=request.question_count,
         db=db,
         quiz_group_id=quiz_group_id,
-        round_number=next_round,  # ← 회차 번호 전달
+        round_number=next_round,
     )
 
     await db.commit()
@@ -599,7 +626,6 @@ async def get_question_list_service(
     if not doc_rows:
         return QuestionListResponse(documents=[])
 
-    # group_id 기준으로 중복 제거
     seen_group_ids = set()
     unique_docs = []
     for doc in doc_rows:
@@ -610,11 +636,9 @@ async def get_question_list_service(
 
     documents = []
     for doc in unique_docs:
-        # 같은 group_id의 document_id 전체 수집
         sibling_stmt = select(Document.id).where(Document.group_id == doc.group_id)
         sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
 
-        # quiz_group별로 그룹핑 (sibling document_id 전체 대상)
         group_stmt = (
             select(
                 Question.quiz_group_id,
@@ -675,21 +699,28 @@ async def delete_quiz_results_service(
 
     deleted_count = 0
 
-    # quiz_group_id 기준으로 questions + quiz_results + user_answers 삭제
+    # ── quiz_result_ids만으로 삭제 (채점 기록만, 문제 유지) ──
+    for qr_id in request.quiz_result_ids:
+        qr_stmt = select(QuizResult).where(QuizResult.id == qr_id)
+        qr = (await db.execute(qr_stmt)).scalar_one_or_none()
+        if qr:
+            if qr.user_id != request.user_id:
+                raise PermissionError("삭제 권한이 없습니다.")
+            await db.delete(qr)
+            deleted_count += 1
+
+    # ── quiz_group_ids 기준 삭제 (문제 + 채점 기록 모두) ──
     for group_id_str in request.quiz_group_ids:
         group_id = UUIDType(group_id_str)
 
-        # 해당 그룹의 quiz_results 조회
         qr_stmt = select(QuizResult).where(QuizResult.quiz_group_id == group_id)
         quiz_results = (await db.execute(qr_stmt)).scalars().all()
 
-        # 본인 데이터인지 검증
         for qr in quiz_results:
             if qr.user_id != request.user_id:
                 raise PermissionError("삭제 권한이 없습니다.")
             await db.delete(qr)
 
-        # 해당 그룹의 questions 삭제
         q_stmt = select(Question).where(Question.quiz_group_id == group_id)
         questions = (await db.execute(q_stmt)).scalars().all()
         for q in questions:
@@ -773,8 +804,17 @@ async def get_wrong_answers_service(
     wrong_answers = []
     for user_answer, question, importance, chunk in rows:
         priority = int(question.difficulty) if question.difficulty else 3
+
+        order_stmt = (
+            select(func.count(Question.id))
+            .where(Question.quiz_group_id == question.quiz_group_id)
+            .where(Question.id <= question.id)
+        )
+        question_number = (await db.execute(order_stmt)).scalar() or 0
+
         wrong_answers.append(WrongAnswerItem(
             question_id=question.id,
+            question_number=question_number,
             question_type=question.question_type,
             question_text=question.question_text,
             options=question.options,
@@ -828,3 +868,28 @@ async def get_quiz_result_detail_service(
         wrong=qr.total_questions - qr.correct_count,
         results=results,
     )
+
+# ────────────────────────────────────────
+# 10. 문서 폴더명 변경
+# ────────────────────────────────────────
+async def update_document_title_service(request: dict, db: AsyncSession):
+    from uuid import UUID as UUIDType
+
+    group_id = request.get("group_id")
+    new_title = request.get("title")
+    user_id = request.get("user_id")
+
+    stmt = select(Document).where(
+        Document.group_id == UUIDType(group_id),
+        Document.user_id == user_id
+    )
+    docs = (await db.execute(stmt)).scalars().all()
+
+    if not docs:
+        raise ValueError("문서를 찾을 수 없습니다.")
+
+    for doc in docs:
+        doc.title = new_title
+
+    await db.commit()
+    return {"message": "제목이 수정되었습니다.", "title": new_title}
