@@ -117,11 +117,12 @@ async def _synthesize_summary(title: str, rows) -> str:
 이 데이터를 바탕으로 학습자가 실제로 읽고 공부할 수 있는 체계적인 요약 노트를 작성해주세요.
 
 [작성 규칙]
-- 중요도 높은 개념을 중심으로 핵심 내용을 서술형으로 설명
-- 단순히 키워드 나열이 아닌, 개념 간의 연관성과 맥락을 포함
 - 섹션을 나눌 때는 "## 개념명" 형식 사용
-- 각 개념 아래에 3~5문장으로 명확하게 설명
-- 마지막에 "## 핵심 키워드 정리" 섹션으로 전체 키워드를 한 줄씩 정리
+- 각 섹션은 아래 구조를 따를 것:
+  1. **정의**: 개념을 한 문장으로 명확하게 정의
+  2. 주요 내용을 "- " 불릿 포인트 3~5개로 간결하게 정리 (한 줄씩, 완전한 문장보다 핵심 구문 위주)
+  3. **한줄요약**: 이 개념에서 가장 중요한 한 가지를 한 문장으로
+- 마지막에 "## 핵심 키워드 정리" 섹션으로 전체 키워드를 "- 키워드: 한 줄 설명" 형식으로 정리
 - 중요도 점수나 페이지 번호는 본문에 노출하지 말 것
 - 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 붙여주세요 (예: "[COLOR:yellow]## 개념명")
 - 색상 정보가 없는 섹션은 태그 없이 "## 개념명" 그대로 작성
@@ -199,14 +200,17 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
             color_rgb = _COLOR_MAP.get(stripped[7:end])
             stripped = stripped[end + 1:].lstrip()
 
-        if stripped.startswith("## "):
-            writebox(stripped[3:], fontsize=13, gap=10, color=color_rgb)
-        elif stripped.startswith("# "):
-            writebox(stripped[2:], fontsize=15, gap=12)
-        elif stripped.startswith("- "):
-            writebox(stripped, fontsize=10, gap=4, indent=15)
+        # PDF는 마크다운 볼드(**)를 이해 못하므로 제거
+        clean = stripped.replace("**", "")
+
+        if clean.startswith("## "):
+            writebox(clean[3:], fontsize=13, gap=10, color=color_rgb)
+        elif clean.startswith("# "):
+            writebox(clean[2:], fontsize=15, gap=12)
+        elif clean.startswith("- "):
+            writebox(clean, fontsize=10, gap=4, indent=15)
         else:
-            writebox(stripped, fontsize=10, gap=6, indent=10)
+            writebox(clean, fontsize=10, gap=6, indent=10)
 
     return doc.tobytes()
 
