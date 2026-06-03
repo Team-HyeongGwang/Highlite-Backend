@@ -10,7 +10,7 @@ import openai
 from dotenv import load_dotenv
 
 from db.database import get_db
-from db.models import ImportanceResult, DocumentChunk, Document, Question, QuizResult, UserAnswer
+from db.models import ImportanceResult, DocumentChunk, Document, Question, QuizResult, UserAnswer, User
 
 load_dotenv()
 
@@ -261,7 +261,7 @@ async def export_questions(
             raise HTTPException(status_code=404, detail="오답이 없습니다.")
 
     stmt = (
-        select(Question, Document)
+        select(Question, Document, DocumentChunk)
         .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
@@ -270,17 +270,43 @@ async def export_questions(
         .order_by(Question.id)
     )
 
-    if filter == "핵심만":
-        stmt = stmt.where(ImportanceResult.score >= 9.0)
-    elif filter == "중요만":
-        stmt = stmt.where(ImportanceResult.score >= 7.0)
-    elif filter == "오답만":
+    if filter == "오답만":
         stmt = stmt.where(Question.id.in_(wrong_question_ids))
 
     rows = (await db.execute(stmt)).all()
 
     if not rows:
         raise HTTPException(status_code=404, detail="해당 조건에 맞는 문제가 없습니다.")
+
+    # 핵심만/중요만: 유저 랭킹 기반 priority 계산 후 필터링
+    if filter in ("핵심만", "중요만"):
+        if not user_id:
+            raise HTTPException(status_code=400, detail="핵심만/중요만 필터는 user_id가 필요합니다.")
+        user = (await db.execute(
+            select(User).where(User.id == user_id)
+        )).scalar_one_or_none()
+        hl_ranking = (user.highlighter_ranking or {}) if user else {}
+        pen_ranking = (user.pen_ranking or {}) if user else {}
+
+        def compute_priority(meta: dict) -> int:
+            if not meta:
+                return 3
+            best = 99
+            hl = meta.get("highlight_color")
+            pen = meta.get("handwriting_color")
+            if hl and hl in hl_ranking:
+                best = min(best, hl_ranking[hl])
+            if pen and pen in pen_ranking:
+                best = min(best, pen_ranking[pen])
+            return best if best != 99 else 3
+
+        if filter == "핵심만":
+            rows = [r for r in rows if compute_priority(r[2].meta_data) == 1]
+        elif filter == "중요만":
+            rows = [r for r in rows if compute_priority(r[2].meta_data) <= 2]
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="해당 조건에 맞는 문제가 없습니다.")
 
     title = rows[0][1].title
     safe_title = title.replace(" ", "_")
