@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db.models import Question, ImportanceResult, DocumentChunk, Document, User
+from agents.personalized_agent.service import record_quiz_session
 from agents.question_agent.schemas import (
     DeleteQuizResultRequest,
     DeleteQuizResultResponse,
@@ -474,6 +475,34 @@ async def submit_answers_service(
         db.add(answer)
 
     await db.commit()
+
+    # 채점 완료 후 ImportanceResult.score 개인화 업데이트
+    try:
+        doc_result = await db.execute(
+            select(Document.group_id).where(Document.id == request.document_id)
+        )
+        group_id = doc_result.scalar_one_or_none()
+        if group_id:
+            answers_list = [
+                {
+                    "question_id": r["question_id"],
+                    "user_answer": r["submitted"],
+                    "is_correct": r["is_correct"],
+                }
+                for r in results
+            ]
+            await record_quiz_session(
+                user_id=request.user_id,
+                group_id=group_id,
+                total_questions=total,
+                correct_count=correct,
+                score_percent=score_percent,
+                attempt_phase=request.attempt_phase,
+                answers_list=answers_list,
+                db=db,
+            )
+    except Exception:
+        pass
 
     return SubmitAnswerResponse(
         total=total,
