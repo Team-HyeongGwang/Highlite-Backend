@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Body
 from fastapi.responses import Response
+from pydantic import BaseModel
 from urllib.parse import quote
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -70,6 +71,22 @@ async def export_summary(
         )
     else:
         raise HTTPException(status_code=400, detail="format은 'md' 또는 'pdf'만 지원합니다.")
+
+
+class RenderSummaryRequest(BaseModel):
+    title: str
+    synthesized_text: str
+
+
+@router.post("/render-summary-pdf")
+async def render_summary_pdf(request: RenderSummaryRequest):
+    safe_title = request.title.replace(" ", "_")
+    pdf_bytes = _build_pdf(request.title, request.synthesized_text)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_title)}_summary.pdf"},
+    )
 
 
 async def _synthesize_summary(title: str, rows) -> str:
