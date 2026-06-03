@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import Response
+from urllib.parse import quote
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 import fitz  # PyMuPDF
 import openai
 from dotenv import load_dotenv
 
 from db.database import get_db
-from db.models import ImportanceResult, DocumentChunk, Document
+from db.models import ImportanceResult, DocumentChunk, Document, Question
 
 load_dotenv()
 
@@ -58,14 +59,14 @@ async def export_summary(
         return Response(
             content=content.encode("utf-8"),
             media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{safe_title}_summary.md"'},
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_title)}_summary.md"},
         )
     elif format == "pdf":
         pdf_bytes = _build_pdf(title, synthesized)
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{safe_title}_summary.pdf"'},
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_title)}_summary.pdf"},
         )
     else:
         raise HTTPException(status_code=400, detail="format은 'md' 또는 'pdf'만 지원합니다.")
@@ -188,5 +189,140 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
             writebox(stripped, fontsize=10, gap=4, indent=15)
         else:
             writebox(stripped, fontsize=10, gap=6, indent=10)
+
+    return doc.tobytes()
+
+
+@router.get("/questions")
+async def export_questions(
+    group_id: str = Query(..., description="문서 그룹 ID"),
+    format: str = Query("md", description="내보내기 형식: md 또는 pdf"),
+    db: AsyncSession = Depends(get_db),
+):
+    max_round_stmt = (
+        select(func.max(Question.round_number))
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .join(Document, DocumentChunk.document_id == Document.id)
+        .where(Document.group_id == group_id)
+    )
+    max_round = (await db.execute(max_round_stmt)).scalar()
+
+    if max_round is None:
+        raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
+
+    stmt = (
+        select(Question, Document)
+        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+        .join(Document, DocumentChunk.document_id == Document.id)
+        .where(Document.group_id == group_id)
+        .where(Question.round_number == max_round)
+        .order_by(Question.id)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
+
+    title = rows[0][1].title
+    safe_title = title.replace(" ", "_")
+    questions = [row[0] for row in rows]
+
+    if format == "md":
+        content = _build_questions_markdown(title, questions)
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_title)}_questions.md"},
+        )
+    elif format == "pdf":
+        pdf_bytes = _build_questions_pdf(title, questions)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_title)}_questions.pdf"},
+        )
+    else:
+        raise HTTPException(status_code=400, detail="format은 'md' 또는 'pdf'만 지원합니다.")
+
+
+def _build_questions_markdown(title: str, questions: list) -> str:
+    lines = [f"# {title} 문제지", ""]
+
+    for i, q in enumerate(questions, 1):
+        header = f"## 문제 {i}"
+        if q.question_type:
+            header += f"  ·  {q.question_type}"
+        if q.difficulty:
+            header += f"  ·  난이도: {q.difficulty}"
+        lines.append(header)
+        lines.append("")
+        lines.append(q.question_text)
+        lines.append("")
+        if q.options:
+            for key, value in q.options.items():
+                lines.append(f"{key} {value}")
+            lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    lines += ["", f"# {title} 정답 및 해설", ""]
+
+    for i, q in enumerate(questions, 1):
+        lines.append(f"## 문제 {i}")
+        lines.append("")
+        lines.append(f"**정답:** {q.answer}")
+        lines.append("")
+        lines.append(f"**해설:** {q.explanation}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _build_questions_pdf(title: str, questions: list) -> bytes:
+    W, H, MARGIN = 595, 842, 50
+    doc = fitz.open()
+
+    def new_page():
+        return doc.new_page(width=W, height=H), MARGIN
+
+    page, y = new_page()
+
+    def writebox(text: str, fontsize: int, gap: int, indent: int = 0):
+        nonlocal page, y
+        if H - MARGIN - y < fontsize * 2:
+            page, y = new_page()
+        available_h = H - MARGIN - y
+        rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + available_h)
+        result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
+        y += (available_h - max(0.0, result)) + gap
+
+    # 문제지
+    writebox(f"{title} 문제지", fontsize=16, gap=20)
+
+    for i, q in enumerate(questions, 1):
+        header = f"문제 {i}"
+        if q.question_type:
+            header += f"  ·  {q.question_type}"
+        if q.difficulty:
+            header += f"  ·  난이도: {q.difficulty}"
+        writebox(header, fontsize=12, gap=8)
+        writebox(q.question_text, fontsize=10, gap=6, indent=10)
+        if q.options:
+            for key, value in q.options.items():
+                writebox(f"{key} {value}", fontsize=10, gap=3, indent=20)
+        y += 10
+
+    # 정답 및 해설 — 새 페이지
+    page, y = new_page()
+    writebox(f"{title} 정답 및 해설", fontsize=16, gap=20)
+
+    for i, q in enumerate(questions, 1):
+        writebox(f"문제 {i}", fontsize=12, gap=6)
+        writebox(f"정답: {q.answer}", fontsize=10, gap=4, indent=10)
+        writebox(f"해설: {q.explanation}", fontsize=10, gap=14, indent=10)
 
     return doc.tobytes()
