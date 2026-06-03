@@ -57,6 +57,7 @@ FEW_SHOT_FILES = [
     "handwritten_formula",
     "slide_formula",
     "slide_dense",
+    "slide_symbol"
 ]
 
 # ── 유틸 ──────────────────────────────────────────
