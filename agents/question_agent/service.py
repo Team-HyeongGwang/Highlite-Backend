@@ -239,105 +239,156 @@ async def _generate_questions_from_chunks(
     round_number: int = None,
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
-    generated: List[QuestionItem] = []
 
+    total_chunks = sum(len(v) for v in chunks_by_priority.values())
+    print(f"\n[문제 생성] 🚀 문제 생성 파이프라인 시작 (목표: {question_count}문제 / 청크 수: {total_chunks}개)")
+    print(f"[문제 생성] 우선순위 분배: {counts}")
+
+    task_list = []
     for priority, target_count in counts.items():
-        pool = chunks_by_priority[priority]
+        pool = chunks_by_priority.get(priority, [])
         if not pool:
             continue
-
         pool_sorted = sorted(pool, key=lambda x: x[0].score, reverse=True)
-
         pool_extended = []
         while len(pool_extended) < target_count * 2:
             pool_extended += pool_sorted
         pool_extended = pool_extended[:target_count * 2]
+        for importance, chunk in pool_extended[:target_count]:
+            task_list.append((priority, importance, chunk))
 
-        generated_count = 0
-        pool_idx = 0
+    print(f"[문제 생성] 총 {len(task_list)}개 청크 대상 선정 완료")
 
-        while generated_count < target_count and pool_idx < len(pool_extended):
-            importance, chunk = pool_extended[pool_idx]
-            pool_idx += 1
+    async def generate_one(priority: int, importance, chunk, task_idx: int) -> Optional[tuple]:
+        print(f"[문제 생성] [{task_idx+1}/{len(task_list)}] p.{chunk.page_number} 청크 → Claude + GPT 동시 출제 중...")
 
-            question_type = get_question_type(priority)
-            keywords = importance.keywords or []
-            prompt = build_prompt(chunk.original_text, keywords, question_type)
+        question_type = get_question_type(priority)
+        keywords = importance.keywords or []
+        prompt = build_prompt(chunk.original_text, keywords, question_type)
 
-            claude_result, gpt_result = await asyncio.gather(
-                call_claude(prompt),
-                call_gpt(prompt),
-                return_exceptions=True,
-            )
+        claude_result, gpt_result = await asyncio.gather(
+            call_claude(prompt),
+            call_gpt(prompt),
+            return_exceptions=True,
+        )
 
-            candidates = []
-            for source, result in [("claude", claude_result), ("gpt", gpt_result)]:
-                if isinstance(result, Exception):
-                    continue
-                try:
-                    review = await call_evaluation(
-                        group_id=group_id,
-                        source_chunk_text=chunk.original_text,
-                        question_text=result["question_text"],
-                        options=result.get("options"),
-                        answer=result["answer"],
-                        explanation=result["explanation"],
-                    )
-                    candidates.append({
-                        "source": source,
-                        "result": result,
-                        "review": review,
-                    })
-                except Exception:
-                    continue
+        type_label = {"multiple_choice": "객관식", "ox": "OX", "fill_in_the_blank": "빈칸채우기"}.get(question_type, question_type)
+        claude_ok = not isinstance(claude_result, Exception)
+        gpt_ok = not isinstance(gpt_result, Exception)
+        print(f"[문제 생성] [{task_idx+1}/{len(task_list)}] 출제 완료 ({type_label}) | Claude: {'✅' if claude_ok else '❌'} / GPT: {'✅' if gpt_ok else '❌'}")
 
-            if not candidates:
+        valid_results = []
+        eval_tasks = []
+        for source, result in [("claude", claude_result), ("gpt", gpt_result)]:
+            if isinstance(result, Exception):
                 continue
-
-            approved = [c for c in candidates if c["review"]["is_approved"]]
-            if approved:
-                best = max(approved, key=lambda x: x["review"]["quality_score"])
-            else:
-                revised = [c for c in candidates if c["review"].get("suggested_revision_text")]
-                if revised:
-                    best = revised[0]
-                    best["result"]["question_text"] = best["review"]["suggested_revision_text"]
-                    if best["review"].get("suggested_revision_options"):
-                        best["result"]["options"] = best["review"]["suggested_revision_options"]
-                else:
-                    best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
-
-            result = best["result"]
-
-            question = Question(
-                importance_id=importance.id,
-                quiz_group_id=quiz_group_id,
-                round_number=round_number,
-                question_type=question_type,
-                difficulty=str(priority),
+            valid_results.append((source, result))
+            eval_tasks.append(call_evaluation(
+                group_id=group_id,
+                source_chunk_text=chunk.original_text,
                 question_text=result["question_text"],
                 options=result.get("options"),
                 answer=result["answer"],
                 explanation=result["explanation"],
-            )
-            db.add(question)
-            await db.flush()
-
-            source_type = get_source_type(chunk.meta_data or [])
-            generated.append(QuestionItem(
-                chunk_id=chunk.id,
-                question_type=question_type,
-                question_text=result["question_text"],
-                options=result.get("options"),
-                answer=result["answer"],
-                explanation=result["explanation"],
-                question_number=len(generated) + 1,
-                priority=priority,
-                source_type=source_type,
-                page_number=chunk.page_number,
-                question_id=question.id,
             ))
-            generated_count += 1
+
+        if not eval_tasks:
+            print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] ⚠️ 유효한 후보 없음 → 스킵")
+            return None
+
+        print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] {len(eval_tasks)}개 후보 품질 평가 중...")
+        eval_results = await asyncio.gather(*eval_tasks, return_exceptions=True)
+
+        candidates = []
+        for (source, result), review in zip(valid_results, eval_results):
+            if isinstance(review, Exception):
+                continue
+            candidates.append({"source": source, "result": result, "review": review})
+
+        if not candidates:
+            print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] ❌ 평가 실패 → 스킵")
+            return None
+
+        approved = [c for c in candidates if c["review"]["is_approved"]]
+        if approved:
+            best = max(approved, key=lambda x: x["review"]["quality_score"])
+            print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] ✅ 승인 (score: {best['review']['quality_score']:.2f}, source: {best['source']})")
+        else:
+            revised = [c for c in candidates if c["review"].get("suggested_revision_text")]
+            if revised:
+                best = revised[0]
+                best["result"]["question_text"] = best["review"]["suggested_revision_text"]
+                if best["review"].get("suggested_revision_options"):
+                    best["result"]["options"] = best["review"]["suggested_revision_options"]
+                print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] 🔧 수정안 채택 (source: {best['source']})")
+            else:
+                best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
+                print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] ⚠️ 미승인이지만 최고 점수 채택 (score: {best['review'].get('quality_score', 0):.2f})")
+
+        return (priority, importance, chunk, question_type, best["result"])
+
+    # ── 배치 병렬 실행 ──
+    BATCH_SIZE = 10
+    all_results = []
+    total_batches = math.ceil(len(task_list) / BATCH_SIZE)
+
+    for i in range(0, len(task_list), BATCH_SIZE):
+        batch = task_list[i:i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        print(f"\n[배치 처리] 📦 배치 {batch_num}/{total_batches} 시작 ({len(batch)}개 병렬 처리)")
+
+        batch_results = await asyncio.gather(
+            *[generate_one(p, imp, chunk, i + idx) for idx, (p, imp, chunk) in enumerate(batch)],
+            return_exceptions=True,
+        )
+        all_results.extend(batch_results)
+
+        success = sum(1 for r in batch_results if r and not isinstance(r, Exception))
+        print(f"[배치 처리] ✅ 배치 {batch_num}/{total_batches} 완료 ({success}/{len(batch)} 성공)")
+
+        if i + BATCH_SIZE < len(task_list):
+            await asyncio.sleep(0.5)
+
+    # ── DB 저장 ──
+    generated: List[QuestionItem] = []
+    print(f"\n[DB 저장] 💾 생성된 문제 DB 저장 시작...")
+
+    for res in all_results:
+        if res is None or isinstance(res, Exception):
+            continue
+        priority, importance, chunk, question_type, result = res
+
+        question = Question(
+            importance_id=importance.id,
+            quiz_group_id=quiz_group_id,
+            round_number=round_number,
+            question_type=question_type,
+            difficulty=str(priority),
+            question_text=result["question_text"],
+            options=result.get("options"),
+            answer=result["answer"],
+            explanation=result["explanation"],
+        )
+        db.add(question)
+        await db.flush()
+
+        source_type = get_source_type(chunk.meta_data or [])
+        generated.append(QuestionItem(
+            chunk_id=chunk.id,
+            question_type=question_type,
+            question_text=result["question_text"],
+            options=result.get("options"),
+            answer=result["answer"],
+            explanation=result["explanation"],
+            question_number=len(generated) + 1,
+            priority=priority,
+            source_type=source_type,
+            page_number=chunk.page_number,
+            question_id=question.id,
+        ))
+
+    print(f"[DB 저장] ✅ 완료 → 총 {len(generated)}문제 저장됨")
+    print(f"[문제 생성] 🎉 파이프라인 종료\n")
 
     return generated
 
