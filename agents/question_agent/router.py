@@ -156,3 +156,17 @@ async def get_quiz_result_detail(
         return await get_quiz_result_detail_service(quiz_result_id, db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+# ────────────────────────────────────────
+# 10. 문서 폴더명 변경
+# ────────────────────────────────────────
+@router.patch("/document-title")
+async def update_document_title(
+    request: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from agents.question_agent.service import update_document_title_service
+    try:
+        return await update_document_title_service(request, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
