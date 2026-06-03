@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Body
 from fastapi.responses import Response
 from pydantic import BaseModel
 from urllib.parse import quote
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 import fitz  # PyMuPDF
@@ -9,7 +10,7 @@ import openai
 from dotenv import load_dotenv
 
 from db.database import get_db
-from db.models import ImportanceResult, DocumentChunk, Document, Question
+from db.models import ImportanceResult, DocumentChunk, Document, Question, QuizResult, UserAnswer
 
 load_dotenv()
 
@@ -214,6 +215,8 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
 async def export_questions(
     group_id: str = Query(..., description="문서 그룹 ID"),
     format: str = Query("md", description="내보내기 형식: md 또는 pdf"),
+    filter: str = Query("전체", description="전체/핵심만/중요만/오답만"),
+    user_id: Optional[int] = Query(None, description="오답만 필터 시 필요"),
     db: AsyncSession = Depends(get_db),
 ):
     max_round_stmt = (
@@ -228,6 +231,35 @@ async def export_questions(
     if max_round is None:
         raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
 
+    # 오답만: 가장 최근 quiz_result의 오답 question_id 목록 먼저 수집
+    wrong_question_ids = None
+    if filter == "오답만":
+        if not user_id:
+            raise HTTPException(status_code=400, detail="오답만 필터는 user_id가 필요합니다.")
+        sibling_ids = [
+            r[0] for r in (await db.execute(
+                select(Document.id).where(Document.group_id == group_id)
+            )).all()
+        ]
+        latest_qr = (await db.execute(
+            select(QuizResult)
+            .where(QuizResult.user_id == user_id)
+            .where(QuizResult.document_id.in_(sibling_ids))
+            .order_by(QuizResult.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if not latest_qr:
+            raise HTTPException(status_code=404, detail="채점 기록이 없습니다.")
+        wrong_question_ids = [
+            r[0] for r in (await db.execute(
+                select(UserAnswer.question_id)
+                .where(UserAnswer.quiz_result_id == latest_qr.id)
+                .where(UserAnswer.is_correct == False)
+            )).all()
+        ]
+        if not wrong_question_ids:
+            raise HTTPException(status_code=404, detail="오답이 없습니다.")
+
     stmt = (
         select(Question, Document)
         .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
@@ -237,10 +269,18 @@ async def export_questions(
         .where(Question.round_number == max_round)
         .order_by(Question.id)
     )
+
+    if filter == "핵심만":
+        stmt = stmt.where(ImportanceResult.score >= 9.0)
+    elif filter == "중요만":
+        stmt = stmt.where(ImportanceResult.score >= 7.0)
+    elif filter == "오답만":
+        stmt = stmt.where(Question.id.in_(wrong_question_ids))
+
     rows = (await db.execute(stmt)).all()
 
     if not rows:
-        raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
+        raise HTTPException(status_code=404, detail="해당 조건에 맞는 문제가 없습니다.")
 
     title = rows[0][1].title
     safe_title = title.replace(" ", "_")
