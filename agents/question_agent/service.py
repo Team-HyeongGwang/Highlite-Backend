@@ -877,3 +877,28 @@ async def get_quiz_result_detail_service(
         wrong=qr.total_questions - qr.correct_count,
         results=results,
     )
+
+# ────────────────────────────────────────
+# 10. 문서 폴더명 변경
+# ────────────────────────────────────────
+async def update_document_title_service(request: dict, db: AsyncSession):
+    from uuid import UUID as UUIDType
+
+    group_id = request.get("group_id")
+    new_title = request.get("title")
+    user_id = request.get("user_id")
+
+    stmt = select(Document).where(
+        Document.group_id == UUIDType(group_id),
+        Document.user_id == user_id
+    )
+    docs = (await db.execute(stmt)).scalars().all()
+
+    if not docs:
+        raise ValueError("문서를 찾을 수 없습니다.")
+
+    for doc in docs:
+        doc.title = new_title
+
+    await db.commit()
+    return {"message": "제목이 수정되었습니다.", "title": new_title}
