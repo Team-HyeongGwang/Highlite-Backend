@@ -219,39 +219,33 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
 async def export_questions(
     group_id: str = Query(..., description="문서 그룹 ID"),
     format: str = Query("md", description="내보내기 형식: md 또는 pdf"),
-    filter: str = Query("전체", description="전체/핵심만/중요만/오답만"),
-    user_id: Optional[int] = Query(None, description="오답만 필터 시 필요"),
+    filter: str = Query("전체", description="전체/핵심만/중요만/오답"),
+    user_id: Optional[int] = Query(None, description="오답/핵심만/중요만 필터 시 필요"),
+    quiz_group_id: Optional[str] = Query(None, description="특정 회차 ID"),
     db: AsyncSession = Depends(get_db),
 ):
-    max_round_stmt = (
-        select(func.max(Question.round_number))
-        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
-        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
-        .join(Document, DocumentChunk.document_id == Document.id)
-        .where(Document.group_id == group_id)
-    )
-    max_round = (await db.execute(max_round_stmt)).scalar()
+    import uuid as _uuid
 
-    if max_round is None:
-        raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
-
-    # 오답만: 가장 최근 quiz_result의 오답 question_id 목록 먼저 수집
+    # 오답 필터: 해당 회차의 quiz_result에서 오답 question_id 수집
     wrong_question_ids = None
-    if filter == "오답만":
+    if filter == "오답":
         if not user_id:
-            raise HTTPException(status_code=400, detail="오답만 필터는 user_id가 필요합니다.")
-        sibling_ids = [
-            r[0] for r in (await db.execute(
-                select(Document.id).where(Document.group_id == group_id)
-            )).all()
-        ]
-        latest_qr = (await db.execute(
+            raise HTTPException(status_code=400, detail="오답 필터는 user_id가 필요합니다.")
+        qr_stmt = (
             select(QuizResult)
             .where(QuizResult.user_id == user_id)
-            .where(QuizResult.document_id.in_(sibling_ids))
             .order_by(QuizResult.created_at.desc())
-            .limit(1)
-        )).scalar_one_or_none()
+        )
+        if quiz_group_id:
+            qr_stmt = qr_stmt.where(QuizResult.quiz_group_id == _uuid.UUID(quiz_group_id))
+        else:
+            sibling_ids = [
+                r[0] for r in (await db.execute(
+                    select(Document.id).where(Document.group_id == group_id)
+                )).all()
+            ]
+            qr_stmt = qr_stmt.where(QuizResult.document_id.in_(sibling_ids))
+        latest_qr = (await db.execute(qr_stmt.limit(1))).scalar_one_or_none()
         if not latest_qr:
             raise HTTPException(status_code=404, detail="채점 기록이 없습니다.")
         wrong_question_ids = [
@@ -264,17 +258,32 @@ async def export_questions(
         if not wrong_question_ids:
             raise HTTPException(status_code=404, detail="오답이 없습니다.")
 
+    # 회차 특정: quiz_group_id 있으면 그 회차, 없으면 max_round
     stmt = (
         select(Question, Document, DocumentChunk)
         .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
         .where(Document.group_id == group_id)
-        .where(Question.round_number == max_round)
         .order_by(Question.id)
     )
 
-    if filter == "오답만":
+    if quiz_group_id:
+        stmt = stmt.where(Question.quiz_group_id == _uuid.UUID(quiz_group_id))
+    else:
+        max_round_stmt = (
+            select(func.max(Question.round_number))
+            .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+            .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(Document.group_id == group_id)
+        )
+        max_round = (await db.execute(max_round_stmt)).scalar()
+        if max_round is None:
+            raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
+        stmt = stmt.where(Question.round_number == max_round)
+
+    if filter == "오답":
         stmt = stmt.where(Question.id.in_(wrong_question_ids))
 
     rows = (await db.execute(stmt)).all()
@@ -397,7 +406,7 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
         if q.difficulty:
             header += f"  ·  난이도: {q.difficulty}"
         writebox(header, fontsize=12, gap=8)
-        writebox(q.question_text, fontsize=10, gap=6, indent=10)
+        writebox(q.question_text.replace("**", ""), fontsize=10, gap=6, indent=10)
         if q.options:
             for key, value in q.options.items():
                 writebox(f"{key} {value}", fontsize=10, gap=3, indent=20)
@@ -409,7 +418,7 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
 
     for i, q in enumerate(questions, 1):
         writebox(f"문제 {i}", fontsize=12, gap=6)
-        writebox(f"정답: {q.answer}", fontsize=10, gap=4, indent=10)
-        writebox(f"해설: {q.explanation}", fontsize=10, gap=14, indent=10)
+        writebox(f"정답: {q.answer.replace('**', '')}", fontsize=10, gap=4, indent=10)
+        writebox(f"해설: {q.explanation.replace('**', '')}", fontsize=10, gap=14, indent=10)
 
     return doc.tobytes()
