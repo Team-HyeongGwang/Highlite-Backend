@@ -178,7 +178,11 @@ async def call_claude(prompt: str) -> dict:
     )
     raw = message.content[0].text
     clean = raw.replace("```json", "").replace("```", "").strip()
-    return json.loads(clean)
+    result = json.loads(clean)
+    # 방어 코드: "문제:" 접두어 제거
+    if "question_text" in result:
+        result["question_text"] = result["question_text"].removeprefix("문제:").strip()
+    return result
 
 # ────────────────────────────────────────
 # GPT 호출
@@ -192,7 +196,11 @@ async def call_gpt(prompt: str) -> dict:
     )
     raw = response.choices[0].message.content
     clean = raw.replace("```json", "").replace("```", "").strip()
-    return json.loads(clean)
+    result = json.loads(clean)
+    # 방어 코드: "문제:" 접두어 제거
+    if "question_text" in result:
+        result["question_text"] = result["question_text"].removeprefix("문제:").strip()
+    return result
 
 # ────────────────────────────────────────
 # 평가 Agent 호출
@@ -239,13 +247,6 @@ async def _generate_questions_from_chunks(
 
         pool_sorted = sorted(pool, key=lambda x: x[0].score, reverse=True)
 
-        # ← 수정: target_count만큼 채울 때까지 반복
-        selected_base = []
-        while len(selected_base) < target_count:
-            selected_base += pool_sorted
-        selected_base = selected_base[:target_count]
-
-        # ← 수정: 최대 2배까지 후보 풀 확보 (걸러질 경우 재시도용)
         pool_extended = []
         while len(pool_extended) < target_count * 2:
             pool_extended += pool_sorted
@@ -290,7 +291,7 @@ async def _generate_questions_from_chunks(
                     continue
 
             if not candidates:
-                continue  # 다음 chunk로 재시도
+                continue
 
             approved = [c for c in candidates if c["review"]["is_approved"]]
             if approved:
@@ -303,7 +304,6 @@ async def _generate_questions_from_chunks(
                     if best["review"].get("suggested_revision_options"):
                         best["result"]["options"] = best["review"]["suggested_revision_options"]
                 else:
-                    # ← 승인/수정안 없으면 점수 가장 높은 걸 그냥 사용 (누락 방지)
                     best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
 
             result = best["result"]
@@ -377,7 +377,6 @@ async def generate_questions_service(
 
     quiz_group_id = uuid_lib.uuid4()
 
-    # ← 문제 생성 전 현재 document의 max round_number 조회
     sibling_stmt = select(Document.id).where(Document.group_id == document.group_id)
     sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
 
@@ -396,7 +395,7 @@ async def generate_questions_service(
         question_count=request.question_count,
         db=db,
         quiz_group_id=quiz_group_id,
-        round_number=next_round,  # ← 회차 번호 전달
+        round_number=next_round,
     )
 
     await db.commit()
@@ -466,7 +465,6 @@ async def submit_answers_service(
 
         # 띄어쓰기 무시하고 채점
         def normalize(text: str) -> str:
-            import re
             return re.sub(r'\s+', '', text.strip())
 
         is_correct = (normalize(submitted) == normalize(question.answer))
@@ -477,7 +475,7 @@ async def submit_answers_service(
             "is_correct": is_correct,
             "explanation": question.explanation,
         })
-        
+
     correct = sum(1 for r in results if r["is_correct"])
     total = len(results)
     score_percent = round((correct / total) * 100) if total > 0 else 0
@@ -582,7 +580,6 @@ async def regenerate_from_wrong_service(
 
     quiz_group_id = uuid_lib.uuid4()
 
-    # ← 문제 재생성 전 현재 document의 max round_number 조회
     sibling_stmt = select(Document.id).where(Document.group_id == document.group_id)
     sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
 
@@ -601,7 +598,7 @@ async def regenerate_from_wrong_service(
         question_count=request.question_count,
         db=db,
         quiz_group_id=quiz_group_id,
-        round_number=next_round,  # ← 회차 번호 전달
+        round_number=next_round,
     )
 
     await db.commit()
@@ -629,7 +626,6 @@ async def get_question_list_service(
     if not doc_rows:
         return QuestionListResponse(documents=[])
 
-    # group_id 기준으로 중복 제거
     seen_group_ids = set()
     unique_docs = []
     for doc in doc_rows:
@@ -640,11 +636,9 @@ async def get_question_list_service(
 
     documents = []
     for doc in unique_docs:
-        # 같은 group_id의 document_id 전체 수집
         sibling_stmt = select(Document.id).where(Document.group_id == doc.group_id)
         sibling_ids = [r[0] for r in (await db.execute(sibling_stmt)).all()]
 
-        # quiz_group별로 그룹핑 (sibling document_id 전체 대상)
         group_stmt = (
             select(
                 Question.quiz_group_id,
@@ -705,21 +699,28 @@ async def delete_quiz_results_service(
 
     deleted_count = 0
 
-    # quiz_group_id 기준으로 questions + quiz_results + user_answers 삭제
+    # ── quiz_result_ids만으로 삭제 (채점 기록만, 문제 유지) ──
+    for qr_id in request.quiz_result_ids:
+        qr_stmt = select(QuizResult).where(QuizResult.id == qr_id)
+        qr = (await db.execute(qr_stmt)).scalar_one_or_none()
+        if qr:
+            if qr.user_id != request.user_id:
+                raise PermissionError("삭제 권한이 없습니다.")
+            await db.delete(qr)
+            deleted_count += 1
+
+    # ── quiz_group_ids 기준 삭제 (문제 + 채점 기록 모두) ──
     for group_id_str in request.quiz_group_ids:
         group_id = UUIDType(group_id_str)
 
-        # 해당 그룹의 quiz_results 조회
         qr_stmt = select(QuizResult).where(QuizResult.quiz_group_id == group_id)
         quiz_results = (await db.execute(qr_stmt)).scalars().all()
 
-        # 본인 데이터인지 검증
         for qr in quiz_results:
             if qr.user_id != request.user_id:
                 raise PermissionError("삭제 권한이 없습니다.")
             await db.delete(qr)
 
-        # 해당 그룹의 questions 삭제
         q_stmt = select(Question).where(Question.quiz_group_id == group_id)
         questions = (await db.execute(q_stmt)).scalars().all()
         for q in questions:
@@ -804,7 +805,6 @@ async def get_wrong_answers_service(
     for user_answer, question, importance, chunk in rows:
         priority = int(question.difficulty) if question.difficulty else 3
 
-        # ← quiz_group 내 question_number 계산
         order_stmt = (
             select(func.count(Question.id))
             .where(Question.quiz_group_id == question.quiz_group_id)
@@ -814,7 +814,7 @@ async def get_wrong_answers_service(
 
         wrong_answers.append(WrongAnswerItem(
             question_id=question.id,
-            question_number=question_number,  # ← 추가
+            question_number=question_number,
             question_type=question.question_type,
             question_text=question.question_text,
             options=question.options,
