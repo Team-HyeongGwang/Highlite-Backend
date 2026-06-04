@@ -154,7 +154,7 @@ def build_prompt(
 [출제 대원칙 - 필수 준수]
 1. 엄격한 원문 근거주의: 오직 제공된 [원문]에 명시된 사실과 논리만을 바탕으로 출제하세요. 원문 외 지식이나 상식에 의존해야 풀 수 있는 문제는 절대 금지합니다.
 2. 질문의 명확성: 문제 텍스트 자체만 읽어도 무엇을 묻는지 학습자가 한 번에 파악할 수 있어야 합니다. ("다음 중 맞는 것은?" 같은 불명확한 질문보다는 "~의 특징으로 올바른 것은?" 처럼 명확하게 작성)
-3. 해설 퀄리티 및 길이 제한: 해설은 정답의 이유와 오답이 틀린 이유를 원문 근거를 바탕으로 **최대 3문장 이내**로 간결하게 작성하세요. 특히 객관식(multiple_choice) 문제의 경우, 해설 내에서 각 선지를 설명할 때 반드시 **①, ②, ③, ④ 기호를 명확히 언급**하며 설명해야 합니다.
+3. 해설 퀄리티 및 길이 제한: 해설은 정답의 이유와 오답이 틀린 이유를 원문 근거를 바탕으로 **최대 3문장 이내**로 간결하게 작성하세요. 특히 객관식(multiple_choice) 문제의 경우, 해설 내에서 각 선지를 설명할 때 반드시 **①, ②, ③, ④ 기호를 명확히 언급**하며 설명해야 합니다. **반드시 '~입니다' 체의 경어체로 작성하세요.**
 4. 포맷팅 제한: 모든 문제 유형의 question_text에 "문제:", "Q.", "보기:", "지문:" 등의 불필요한 접두어나 안내어를 절대 포함하지 마세요. (특히 OX 문제에서 이 실수가 잦으니 극도로 주의하세요.)
 
 반드시 아래의 정해진 JSON 포맷으로만 응답하세요. Markdown 블록(```json)을 포함하지 말고 순수 JSON 문자열만 출력해야 합니다.
@@ -180,9 +180,13 @@ async def call_claude(prompt: str) -> dict:
     raw = message.content[0].text
     clean = raw.replace("```json", "").replace("```", "").strip()
     result = json.loads(clean)
-    # 방어 코드: "문제:" 접두어 제거
+    # 방어 코드: "문제:" 등 접두어 제거
     if "question_text" in result:
-        result["question_text"] = result["question_text"].removeprefix("문제:").strip()
+        text = result["question_text"]
+        for prefix in ["문제:", "Q.", "보기:", "지문:", "문제 :"]:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        result["question_text"] = text
     return result
 
 # ────────────────────────────────────────
@@ -198,9 +202,13 @@ async def call_gpt(prompt: str) -> dict:
     raw = response.choices[0].message.content
     clean = raw.replace("```json", "").replace("```", "").strip()
     result = json.loads(clean)
-    # 방어 코드: "문제:" 접두어 제거
+    # 방어 코드: "문제:" 등 접두어 제거
     if "question_text" in result:
-        result["question_text"] = result["question_text"].removeprefix("문제:").strip()
+        text = result["question_text"]
+        for prefix in ["문제:", "Q.", "보기:", "지문:", "문제 :"]:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        result["question_text"] = text
     return result
 
 # ────────────────────────────────────────
