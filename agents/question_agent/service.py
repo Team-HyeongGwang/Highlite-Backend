@@ -140,21 +140,43 @@ def build_prompt(
   2. 원문의 특정 키워드를 유사해 보이는 다른 오개념과 교묘하게 결합한 선지
   3. 지나친 일반화(예: 반드시, 항상, 전혀 등)를 포함하여 오류를 만든 선지
 - 모든 선지는 문장 구조와 길이를 최대한 유사하게 맞춰 시각적 힌트를 배제하세요.
-- options에 "①","②","③","④" 키로 보기 4개를 제공하세요.""",
+- options에 "①","②","③","④" 키로 보기 4개를 제공하세요.
+
+[출제 포맷]
+{{
+  "question_text": "질문 본문만 작성 (①~④ 선지 내용이나 '문제:', 'Q.' 등의 접두어 포함 절대 엄금)",
+  "options": {{"①": "선지1 내용", "②": "선지2 내용", "③": "선지3 내용", "④": "선지4 내용"}},
+  "answer": "①", 
+  "explanation": "최대 3문장 이내의 근거 중심 해설 (반드시 ①, ②, ③, ④ 기호를 명확히 언급하며 경어체로 작성)"
+}}""",
 
         "ox": """[O/X 문제 조건]
 - 문장은 단 한 줄로도 명확하게 참(O) 또는 거짓(X)이 판별되어야 합니다.
 - 단순히 원문 문장에 '아니다'만 붙인 유치한 오답 문장은 금지합니다.
 - 개념의 핵심 전제나 조건을 살짝 비틀어 깊은 이해를 요구하는 문장으로 구성하세요.
-- **[경고]** question_text에 "문제:", "Q.", "다음 문장의 참/거짓을 고르시오" 같은 안내 문구를 절대 넣지 마세요. 오직 판별 대상이 되는 본문 문장 한 줄만 순수하게 넣어야 합니다.
-- options는 null로 설정하세요.""",
+- options는 반드시 null로 설정하세요.
+
+[출제 포맷]
+{{
+  "question_text": "참/거짓을 판별할 순수 문장 한 줄만 작성 ('다음 문장이 맞으면...' 같은 안내문구나 접두어 절대 엄금)",
+  "options": null,
+  "answer": "O",
+  "explanation": "최대 3문장 이내의 근거 중심 해설 (경어체로 작성)"
+}}""",
 
         "fill_in_the_blank": """[빈칸 채우기 문제 조건]
 - 원문에서 가장 학술적으로 중요한 개념/단어 자리를 딱 1개만 '_____'로 표시하세요.
-- 빈칸 바로 뒤에 붙는 조사(은/는, 이/가, 을/를)를 통해 정답의 자음/모음 힌트가 유추되지 않도록 문장을 매끄럽게 다듬으세요.
-- 단순히 앞뒤 단어 암기로 푸는 것이 아니라, 전체 문맥을 이해해야만 빈칸을 유추할 수 있도록 출제하세요.
-- **참고**: 채점 시에는 사용자가 입력한 값의 띄어쓰기를 무시하고 채점하므로, answer에는 원문 기준 정답 단어를 공백 포함 그대로 제공하면 됩니다.
-- options는 null로 설정하세요.""",
+- 빈칸 바로 뒤에 붙는 조사(은/는, 이/가, 을/를)를 통해 정답의 힌트가 유추되지 않도록 문장을 매끄럽게 다듬으세요.
+- options는 반드시 null로 설정하세요.
+- **[핵심 금지]** question_text는 반드시 빈칸(_____)이 포함된 문장 자체여야 합니다. "다음 빈칸에 들어갈 용어를 쓰시오", "다음은 특정 과목에 대한 필기 내용이다. 빈칸에 들어갈 용어를 쓰시오." 같은 안내 문구로 시작하는 것은 절대 금지입니다.
+
+[출제 포맷]
+{{
+  "question_text": "빈칸(_____)이 포함된 핵심 개념 문장 자체만 작성. 예시: '스택은 _____ 원칙을 따르는 자료구조이다.'",
+  "options": null,
+  "answer": "원문기준정답단어",
+  "explanation": "최대 3문장 이내의 근거 중심 해설 (경어체로 작성)"
+}}""",
     }[question_type]
 
     feedback_guide = ""
@@ -167,8 +189,12 @@ def build_prompt(
         }
         feedback_guide = f"\n[중요 피드백 반영 지시]\n주의: {feedback_map.get(feedback_type, '')}"
 
-    return f"""너는 출제 오류율 0%를 자랑하는 대학교 전공 시험 출제위원이야.
+        return f"""너는 출제 오류율 0%를 자랑하는 대학교 전공 시험 출제위원이야.
 제공된 [원문]과 [핵심 키워드]를 바탕으로, 단순 암기(Recall)를 넘어 개념 적용 및 분석 능력을 평가할 수 있는 고품격 문제를 출제해줘.
+
+[최우선 준수 원칙]
+1. 실질 개념 출제 원칙: [원문]에 "[필기: ...]", "[별표]", "[밑줄]" 등의 메타 태그가 포함된 경우, 해당 태그 자체나 과목명·필기 형식을 묻는 문제는 절대 출제하지 마세요. 반드시 태그 안에 담긴 실질적인 학습 개념과 내용을 바탕으로 출제해야 합니다.
+2. 단일 포인트 집중 출제: 제공된 [원문]에서 가장 핵심적인 개념 포인트 하나에만 집중하여 출제하세요. 여러 개념을 한 문제에 혼합하거나 지엽적인 세부 사항을 묻지 마세요.
 
 [원문]
 {context_text}
@@ -176,23 +202,15 @@ def build_prompt(
 [핵심 키워드]
 {', '.join(keywords)}
 
+[출제 대원칙 - 필수 준수]
+3. 엄격한 원문 근거주의: 오직 제공된 [원문]에 명시된 사실과 논리만을 바탕으로 출제하세요. 원문 외 지식이나 상식에 의존해야 풀 수 있는 문제는 절대 금지합니다.
+4. 질문의 명확성: 문제 텍스트 자체만 읽어도 무엇을 묻는지 학습자가 한 번에 파악할 수 있어야 합니다.
+5. 해설 퀄리티 및 길이 제한: 해설은 정답의 이유와 오답이 틀린 이유를 원문 근거를 바탕으로 최대 3문장 이내의 간결한 경어체('~입니다')로 작성하세요.
+6. 강력한 포맷팅 제한: 모든 문제 유형의 question_text에 "문제:", "Q.", "보기:", "지문:" 등의 불필요한 접두어를 절대 포함하지 마세요. 객관식의 경우 question_text 내부에 ①~④ 선지를 절대 중복 기재하지 마세요.
+
 {type_guide}{feedback_guide}
 
-[출제 대원칙 - 필수 준수]
-1. 엄격한 원문 근거주의: 오직 제공된 [원문]에 명시된 사실과 논리만을 바탕으로 출제하세요. 원문 외 지식이나 상식에 의존해야 풀 수 있는 문제는 절대 금지합니다.
-2. 질문의 명확성: 문제 텍스트 자체만 읽어도 무엇을 묻는지 학습자가 한 번에 파악할 수 있어야 합니다. ("다음 중 맞는 것은?" 같은 불명확한 질문보다는 "~의 특징으로 올바른 것은?" 처럼 명확하게 작성)
-3. 해설 퀄리티 및 길이 제한: 해설은 정답의 이유와 오답이 틀린 이유를 원문 근거를 바탕으로 **최대 3문장 이내**로 간결하게 작성하세요. 특히 객관식(multiple_choice) 문제의 경우, 해설 내에서 각 선지를 설명할 때 반드시 **①, ②, ③, ④ 기호를 명확히 언급**하며 설명해야 합니다. **반드시 '~입니다' 체의 경어체로 작성하세요.**
-4. 포맷팅 제한: 모든 문제 유형의 question_text에 "문제:", "Q.", "보기:", "지문:" 등의 불필요한 접두어나 안내어를 절대 포함하지 마세요. (특히 OX 문제, 객관식 문제에서 이 실수가 잦으니 극도로 주의하세요.)
-
-반드시 아래의 정해진 JSON 포맷으로만 응답하세요. Markdown 블록(```json)을 포함하지 말고 순수 JSON 문자열만 출력해야 합니다.
-**[최종 경고]** question_text 값은 절대로 "문제:", "Q.", "보기:" 등의 접두어로 시작하면 안 됩니다. 위반 시 출제 실패로 간주합니다.
-
-{{
-  "question_text": "순수한 문제 텍스트 (접두어 절대 금지)",
-  "options": {{"①": "선지1", "②": "선지2", "③": "선지3", "④": "선지4"}},
-  "answer": "정답 텍스트 (객관식인 경우 '①' 혹은 '②' 형태의 키값 / OX인 경우 'O' 또는 'X' / 빈칸인 경우 '정답단어')",
-  "explanation": "최대 3문장 이내의 근거 중심 해설 (객관식은 기호 필수 언급)"
-}}
+반드시 위 [출제 포맷] 구조를 완벽히 따른 순수 JSON 문자열만 출력하세요. Markdown 블록(```json)은 절대 포함하지 마세요.
 """
 
 # ────────────────────────────────────────
@@ -536,8 +554,66 @@ async def regenerate_question_service(
         request.question_type,
         feedback_type=request.feedback_type,
     )
-    result = await call_claude(prompt)
 
+    # Claude + GPT 병렬 호출
+    claude_result, gpt_result = await asyncio.gather(
+        call_claude(prompt),
+        call_gpt(prompt),
+        return_exceptions=True,
+    )
+
+    # evaluation agent 병렬 호출
+    valid_results = []
+    eval_tasks = []
+    for source, result in [("claude", claude_result), ("gpt", gpt_result)]:
+        if isinstance(result, Exception):
+            print(f"[피드백 재생성] {source} 호출 실패: {result}")
+            continue
+        valid_results.append((source, result))
+        eval_tasks.append(call_evaluation(
+            group_id="feedback",  # 피드백 재생성은 group_id 불필요, 임시값
+            source_chunk_text=request.context_text,
+            question_text=result["question_text"],
+            options=result.get("options"),
+            answer=result["answer"],
+            explanation=result["explanation"],
+        ))
+
+    if not eval_tasks:
+        raise ValueError("Claude와 GPT 모두 문제 생성에 실패했습니다.")
+
+    eval_results = await asyncio.gather(*eval_tasks, return_exceptions=True)
+
+    candidates = []
+    for (source, result), review in zip(valid_results, eval_results):
+        if isinstance(review, Exception):
+            print(f"[피드백 재생성] evaluation 실패: {review}")
+            continue
+        candidates.append({"source": source, "result": result, "review": review})
+
+    if not candidates:
+        raise ValueError("평가 Agent 호출에 실패했습니다.")
+
+    # 최선 후보 선택
+    approved = [c for c in candidates if c["review"]["is_approved"]]
+    if approved:
+        best = max(approved, key=lambda x: x["review"]["quality_score"])
+        print(f"[피드백 재생성] ✅ 승인 (score: {best['review']['quality_score']:.2f}, source: {best['source']})")
+    else:
+        revised = [c for c in candidates if c["review"].get("suggested_revision_text")]
+        if revised:
+            best = revised[0]
+            best["result"]["question_text"] = best["review"]["suggested_revision_text"]
+            if best["review"].get("suggested_revision_options"):
+                best["result"]["options"] = best["review"]["suggested_revision_options"]
+            print(f"[피드백 재생성] 🔧 수정안 채택 (source: {best['source']})")
+        else:
+            best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
+            print(f"[피드백 재생성] ⚠️ 미승인 최고 점수 채택 (score: {best['review'].get('quality_score', 0):.2f})")
+
+    result = best["result"]
+
+    # DB 업데이트
     q_result = await db.execute(select(Question).where(Question.id == request.question_id))
     question = q_result.scalar_one_or_none()
 
