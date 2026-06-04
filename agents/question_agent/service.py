@@ -37,31 +37,58 @@ EVALUATION_URL = os.getenv("EVALUATION_URL", "http://127.0.0.1:8000/evaluation/r
 # ────────────────────────────────────────
 # 순위 결정
 # ────────────────────────────────────────
-def get_priority(meta_data: list, highlighter_ranking: dict, pen_ranking: dict) -> int:
+def get_priority(meta_data, highlighter_ranking: dict, pen_ranking: dict) -> int:
     best = 99
-    for cue in meta_data or []:
-        if not isinstance(cue, dict):
-            continue
-        color = cue.get("color", "")
-        cue_type = cue.get("type", "")
-        if cue_type == "highlight":
-            rank = highlighter_ranking.get(color, 99)
-        elif cue_type == "pen":
-            rank = pen_ranking.get(color, 99)
-        else:
-            continue
-        best = min(best, rank)
+
+    # 형식 1: 리스트 형식 [{"type": "highlight", "color": "yellow"}, ...]
+    if isinstance(meta_data, list):
+        for cue in meta_data:
+            if not isinstance(cue, dict):
+                continue
+            color = cue.get("color", "")
+            cue_type = cue.get("type", "")
+            if cue_type == "highlight":
+                rank = highlighter_ranking.get(color, 99)
+            elif cue_type == "pen":
+                rank = pen_ranking.get(color, 99)
+            else:
+                continue
+            best = min(best, rank)
+
+    # 형식 2: 딕셔너리 형식 {"highlight_color": "yellow", "handwriting_color": "blue"}
+    elif isinstance(meta_data, dict):
+        highlight_color = meta_data.get("highlight_color")
+        handwriting_color = meta_data.get("handwriting_color")
+
+        if highlight_color:
+            rank = highlighter_ranking.get(highlight_color, 99)
+            best = min(best, rank)
+        if handwriting_color:
+            rank = pen_ranking.get(handwriting_color, 99)
+            best = min(best, rank)
+
     return best if best != 99 else 3
 
 # ────────────────────────────────────────
 # source_type 결정
 # ────────────────────────────────────────
-def get_source_type(meta_data: list) -> str:
-    for cue in meta_data or []:
-        if not isinstance(cue, dict):
-            continue
-        if cue.get("type") == "pen":
+def get_source_type(meta_data) -> str:
+    # 형식 1: 리스트 형식
+    if isinstance(meta_data, list):
+        for cue in meta_data:
+            if not isinstance(cue, dict):
+                continue
+            if cue.get("type") == "pen":
+                return "pen"
+        return "highlight"
+
+    # 형식 2: 딕셔너리 형식
+    elif isinstance(meta_data, dict):
+        if meta_data.get("handwriting_color"):
             return "pen"
+        if meta_data.get("highlight_color"):
+            return "highlight"
+
     return "highlight"
 
 # ────────────────────────────────────────
@@ -425,6 +452,8 @@ async def generate_questions_service(
 
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
+    print(f"[DEBUG] highlighter_ranking: {highlighter_ranking}")
+    print(f"[DEBUG] pen_ranking: {pen_ranking}")    
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -433,6 +462,7 @@ async def generate_questions_service(
             highlighter_ranking,
             pen_ranking,
         )
+        print(f"[DEBUG] chunk_id={chunk.id} meta_data={chunk.meta_data} → priority={priority}")
         chunks_by_priority[priority].append((importance, chunk))
 
     quiz_group_id = uuid_lib.uuid4()
@@ -847,6 +877,7 @@ async def get_questions_by_group_service(
     questions = []
     for idx, (question, importance, chunk) in enumerate(rows):
         source_type = get_source_type(chunk.meta_data or [])
+        print(f"[DEBUG] chunk_id={chunk.id} meta_data={chunk.meta_data} → source_type={source_type}")
         priority = int(question.difficulty) if question.difficulty else 3
         options = question.options if question.options else None
 
