@@ -173,7 +173,7 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
         print(f"   -> {page_num} 페이지 추출 완료! ⚡️")
         return page_chunks
 
-    semaphore = asyncio.Semaphore(50)
+    semaphore = asyncio.Semaphore(25) # 제미나이 API 부하 방지
     
     async def sem_process(page_num, b64):
         async with semaphore:
