@@ -49,6 +49,7 @@ async def review(req: QuestionReviewRequest) -> QuestionReviewResponse:
 해설: {req.explanation}
 
 검수 기준:
+0. [즉시 반려] question_text에 "문제:", "보기:", "정답:", "해설:" 등의 문자열이 포함되어 있으면 is_approved=false, quality_score=1로 설정하세요. 이는 선지나 정답/해설이 문제 지문에 그대로 노출된 심각한 오류입니다.
 1. 원본 텍스트에 없는 내용이나 사실과 다른 왜곡된 내용이 포함되지 않았는가?
 2. 정답이 혼동 없이 명확하게 하나뿐인가?
 3. 오답 보기들이 그럴싸하면서도 학술적으로 명확히 틀렸는가?
