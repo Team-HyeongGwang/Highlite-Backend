@@ -109,7 +109,6 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
     # ⭐️ 1. 1장씩만 깔끔하게 분석하는 함수
     async def process_single_page(page_num, b64):
         from .primer import get_cache, SYSTEM_PROMPT
-        from google.api_core.exceptions import ServiceUnavailable, ResourceExhausted
         
         # 1) primer.py에서 구워진 캐시 스냅샷 확보 시도
         cache = None

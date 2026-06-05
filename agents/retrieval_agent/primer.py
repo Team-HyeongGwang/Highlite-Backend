@@ -114,9 +114,17 @@ async def _try_create_cache(model: str, contents: list):
             ttl=datetime.timedelta(hours=6),
         )
         return cache
-    except (ServiceUnavailable, ResourceExhausted) as e:
-        print(f"[Primer] {model} 캐시 생성 실패 ({type(e).__name__}) — 다음 모델로 폴백합니다.")
-        return None
+    
+    except Exception as e:
+        err_msg = str(e)
+        # 구글 SDK 예외 및 문자열 래핑까지 이중 방어
+        if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "503", "ServiceUnavailable"]):
+            print(f"[Primer ⚠️] {model} 캐시 생성 제한 감지 — 해당 캐시는 건너뜁니다.")
+            return None
+        else:
+            print(f"[Primer 🚨] {model} 캐시 생성 중 예상치 못한 치명적 에러 발생: {e}")
+            raise
+
 
 
 # ── 서버 시작 시 한 번만 실행 ──────────────────────────────────────────
