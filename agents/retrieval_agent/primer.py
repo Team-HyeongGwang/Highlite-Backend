@@ -4,6 +4,7 @@ import datetime
 import asyncio
 import google.generativeai as genai
 from google.generativeai import caching
+from google.api_core.exceptions import ServiceUnavailable, ResourceExhausted
 from db.supabase_client import get_supabase_client
 
 SYSTEM_PROMPT = """
@@ -50,6 +51,13 @@ SYSTEM_PROMPT = """
 
 # ── 전역 상태 ──────────────────────────────────────────
 _cache = None
+_active_model: str | None = None  # 실제로 캐시가 생성된 모델명 추적
+
+# ── 모델 우선순위 ──────────────────────────────────────────
+MODEL_CANDIDATES = [
+    "models/gemini-2.5-pro",
+    "models/gemini-2.5-flash",
+]
 
 # ── Few-shot 파일 목록 ──────────────────────────────────────────
 FEW_SHOT_FILES = [
@@ -65,6 +73,7 @@ def pdf_page_to_b64(pdf_bytes: bytes) -> str:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pix = doc[0].get_pixmap(dpi=150)
     return base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
+
 
 # ── 개별 파일 1세트(PDF + JSON)를 비동기로 다운로드하고 변환하는 내부 함수 ──
 async def _download_and_process_file(supabase, name: str) -> list:
@@ -89,9 +98,30 @@ async def _download_and_process_file(supabase, name: str) -> list:
     ]
 
 
+# ── 단일 모델로 캐시 생성 시도 ──────────────────────────────────────────
+async def _try_create_cache(model: str, contents: list):
+    """
+    지정 모델로 캐시 생성을 시도합니다.
+    503(ServiceUnavailable) / 429(ResourceExhausted) 발생 시 None을 반환하고,
+    그 외 예외는 그대로 raise합니다.
+    """
+    try:
+        cache = await asyncio.to_thread(
+            caching.CachedContent.create,
+            model=model,
+            system_instruction=SYSTEM_PROMPT,
+            contents=contents,
+            ttl=datetime.timedelta(hours=6),
+        )
+        return cache
+    except (ServiceUnavailable, ResourceExhausted) as e:
+        print(f"[Primer] {model} 캐시 생성 실패 ({type(e).__name__}) — 다음 모델로 폴백합니다.")
+        return None
+
+
 # ── 서버 시작 시 한 번만 실행 ──────────────────────────────────────────
 async def run_primer(input_data: dict) -> dict:
-    global _cache
+    global _cache, _active_model
 
     supabase = get_supabase_client()
     
@@ -111,16 +141,24 @@ async def run_primer(input_data: dict) -> dict:
     print(f"[Primer] Few-shot 컨텐츠 조립 완료. 제미나이 컨텍스트 캐시 생성 중... 🧠")
     
     # 4) 제미나이 컨텍스트 캐시 생성
-    # Google 서버와 통신하는 동기(Sync) 함수를 asyncio.to_thread로 감싸서 비동기로 처리
-    _cache = await asyncio.to_thread(
-        caching.CachedContent.create,
-        model="models/gemini-2.5-flash",
-        system_instruction=SYSTEM_PROMPT,
-        contents=contents,
-        ttl=datetime.timedelta(hours=6),
-    )
+    # Pro → Flash 순서로 시도
+    cache = None
     
-    print(f"[Primer] 캐시 등록 완료 — cache name: {_cache.name}")
+    for model in MODEL_CANDIDATES:
+        print(f"[Primer] {model} 캐시 생성 시도...")
+        cache = await _try_create_cache(model, contents)
+        if cache is not None:
+            _active_model = model
+            break
+    
+    if cache is None:
+        raise RuntimeError(
+            f"모든 모델({', '.join(MODEL_CANDIDATES)})에서 캐시 생성에 실패했습니다. "
+            "잠시 후 다시 시도해 주세요."
+        )
+        
+    _cache = cache
+    print(f"[Primer] 캐시 등록 완료 — model: {_active_model} | cache name: {_cache.name}")
     return input_data
 
 
@@ -128,3 +166,9 @@ def get_cache():
     if not _cache:
         raise RuntimeError("Cache가 초기화되지 않았습니다. run_primer()를 먼저 실행하세요.")
     return _cache
+
+def get_active_model() -> str:
+    """현재 캐시가 생성된 모델명을 반환합니다. 추론 시 동일 모델을 사용해야 합니다."""
+    if not _active_model:
+        raise RuntimeError("활성 모델이 없습니다. run_primer()를 먼저 실행하세요.")
+    return _active_model

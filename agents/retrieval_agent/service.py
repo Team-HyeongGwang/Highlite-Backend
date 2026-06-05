@@ -8,6 +8,7 @@ import google.generativeai as genai
 from typing import TypedDict
 import asyncio
 from pathlib import Path
+from agents.retrieval_agent.primer import get_active_model
 from db.models import Document
 from agents.importance_agent.schemas import ImportanceRequest
 from typing import Optional
@@ -30,8 +31,14 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", 
+llm_pro = ChatGoogleGenerativeAI(
+    model="gemini-2.5-pro",
+    temperature=0,
+    google_api_key=GOOGLE_API_KEY,
+)
+
+llm_flash = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
     temperature=0,
     google_api_key=GOOGLE_API_KEY,
 )
@@ -102,6 +109,7 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
     # ⭐️ 1. 1장씩만 깔끔하게 분석하는 함수
     async def process_single_page(page_num, b64):
         from .primer import get_cache, SYSTEM_PROMPT
+        from google.api_core.exceptions import ServiceUnavailable, ResourceExhausted
         
         # 1) primer.py에서 구워진 캐시 스냅샷 확보 시도
         cache = None
@@ -113,11 +121,17 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
         # 2) 캐시 유무(TTL 만료 포함)에 따른 분기 처리
         if cache and hasattr(cache, 'name'):
             # 캐시가 유효할 때는, 캐시에서 바로 결과 few-shot prompting 정보를 가져옴
+            
+            try:
+                active_model = get_active_model()
+            except Exception:
+                active_model = "gemini-2.5-pro"  # 만약을 위한 기본값
+
             cached_llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash", 
+                model=active_model,
                 temperature=0,
                 google_api_key=GOOGLE_API_KEY,
-                cached_content=cache.name  # 구워진 캐시 ID 매핑
+                cached_content=cache.name, # 구워진 캐시 ID 매핑
             )
             messages = [
                 HumanMessage(content=[
@@ -125,7 +139,20 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                     {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."}
                 ])
             ]
-            invocation_target = cached_llm
+            
+            try:
+                response = await cached_llm.ainvoke(messages)
+            except (ServiceUnavailable, ResourceExhausted) as e:
+                # 캐시 히트였지만 추론 단계에서 503/429 → Flash 캐시로 재시도
+                print(f"[Fallback ⚠️] {page_num}p 캐시 추론 실패 ({type(e).__name__}) — Flash 캐시로 폴백합니다.")
+                cached_llm_flash = ChatGoogleGenerativeAI(
+                    model="gemini-2.5-flash",
+                    temperature=0,
+                    google_api_key=GOOGLE_API_KEY,
+                    cached_content=cache.name,
+                )
+                
+                response = await cached_llm_flash.ainvoke(messages)
         
         else:
             # 캐시가 없거나 만료된 경우, 직접 프롬프트 주입
@@ -137,11 +164,12 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                     {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."}
                 ])
             ]
-            invocation_target = llm
+            try:
+                response = await llm_pro.ainvoke(messages)
+            except (ServiceUnavailable, ResourceExhausted) as e:
+                print(f"[Fallback ⚠️] {page_num}p Pro 직접 호출 실패 ({type(e).__name__}) — Flash로 폴백합니다.")
+                response = await llm_flash.ainvoke(messages)
             
-            # 3) 최종 결정된 타겟으로 LLM 호출
-        response = await invocation_target.ainvoke(messages)
-        
         page_chunks = []
         try:
             raw_content = response.content
