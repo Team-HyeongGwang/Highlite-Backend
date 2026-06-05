@@ -49,9 +49,11 @@ SYSTEM_PROMPT = """
 ]
 """
 
-# ── 전역 상태 ──────────────────────────────────────────
-_cache = None
-_active_model: str | None = None  # 실제로 캐시가 생성된 모델명 추적
+# ── 전역 상태 (듀얼 캐시 저장소로 변경) ───────────────────────────
+_caches = {
+    "pro": None,
+    "flash": None
+}
 
 # ── 모델 우선순위 ──────────────────────────────────────────
 MODEL_CANDIDATES = [
@@ -129,7 +131,7 @@ async def _try_create_cache(model: str, contents: list):
 
 # ── 서버 시작 시 한 번만 실행 ──────────────────────────────────────────
 async def run_primer(input_data: dict) -> dict:
-    global _cache, _active_model
+    global _caches
 
     supabase = get_supabase_client()
     
@@ -149,34 +151,53 @@ async def run_primer(input_data: dict) -> dict:
     print(f"[Primer] Few-shot 컨텐츠 조립 완료. 제미나이 컨텍스트 캐시 생성 중... 🧠")
     
     # 4) 제미나이 컨텍스트 캐시 생성
-    # Pro → Flash 순서로 시도
-    cache = None
+    # Pro와 Flash 캐시 생성을 동시에 병렬로
+    cache_tasks = [
+        _try_create_cache("models/gemini-2.5-pro", contents),
+        _try_create_cache("models/gemini-2.5-flash", contents)
+    ]
     
-    for model in MODEL_CANDIDATES:
-        print(f"[Primer] {model} 캐시 생성 시도...")
-        cache = await _try_create_cache(model, contents)
-        if cache is not None:
-            _active_model = model
-            break
+    pro_cache, flash_cache = await asyncio.gather(*cache_tasks)
     
-    if cache is None:
+    _caches["pro"] = pro_cache
+    _caches["flash"] = flash_cache
+    
+    #  다 생성 실패했을 때만 에러 발생
+    if _caches["pro"] is None and _caches["flash"] is None:
         raise RuntimeError(
-            f"모든 모델({', '.join(MODEL_CANDIDATES)})에서 캐시 생성에 실패했습니다. "
-            "잠시 후 다시 시도해 주세요."
+            "모든 모델(Pro, Flash)에서 캐시 생성에 실패했습니다. 구글 API 상태를 확인하세요."
         )
         
-    _cache = cache
-    print(f"[Primer] 캐시 등록 완료 — model: {_active_model} | cache name: {_cache.name}")
+    if _caches["pro"]:
+        print(f"[Primer ✅] Pro 캐시 등록 완료 — name: {_caches['pro'].name}")
+    if _caches["flash"]:
+        print(f"[Primer ✅] Flash 캐시 등록 완료 — name: {_caches['flash'].name}")
+        
     return input_data
 
+# ── PDF 함수와 연결해줄 우회 유틸 함수들 (최종 결합본) ───────────────────────────
 
-def get_cache():
-    if not _cache:
+def get_cache(model_type: str = "pro"):
+    """
+    PDF 추출 함수에서 호출할 안전한 헬퍼입니다.
+    - 인자 없이 get_cache() 호출 시: 기본값인 "pro" 캐시 객체 반환 (기존 코드 호환)
+    - get_cache("flash") 호출 시: Flash 전용 캐시 객체 반환 (폴백용)
+    """
+    if not _caches.get("pro") and not _caches.get("flash"):
         raise RuntimeError("Cache가 초기화되지 않았습니다. run_primer()를 먼저 실행하세요.")
-    return _cache
+        
+    cache_obj = _caches.get(model_type)
+    if not cache_obj:
+        print(f"[Warning ⚠️] {model_type} 캐시가 생성되지 않았거나 사용할 수 없는 상태입니다.")
+    return cache_obj
 
-def get_active_model() -> str:
-    """현재 캐시가 생성된 모델명을 반환합니다. 추론 시 동일 모델을 사용해야 합니다."""
-    if not _active_model:
-        raise RuntimeError("활성 모델이 없습니다. run_primer()를 먼저 실행하세요.")
-    return _active_model
+
+def get_active_model(model_type: str = "pro") -> str:
+    """
+    현재 분석에 사용할 모델명을 반환합니다.
+    - 인자 없이 get_active_model() 호출 시: 기본값인 "models/gemini-2.5-pro" 반환
+    - get_active_model("flash") 호출 시: "models/gemini-2.5-flash" 반환
+    """
+    if model_type == "flash":
+        return "models/gemini-2.5-flash"
+    return "models/gemini-2.5-pro"
