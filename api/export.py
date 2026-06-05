@@ -32,6 +32,8 @@ _COLOR_MAP = {
     "black":  (0.1, 0.1,  0.1),
 }
 
+_COLOR_FROM_EMOJI = {v: k for k, v in _EMOJI_MAP.items()}
+
 
 @router.get("/summary")
 async def export_summary(
@@ -124,8 +126,10 @@ async def _synthesize_summary(title: str, rows) -> str:
   3. **한줄요약**: 이 개념에서 가장 중요한 한 가지를 한 문장으로
 - 마지막에 "## 핵심 키워드 정리" 섹션으로 전체 키워드를 "- 키워드: 한 줄 설명" 형식으로 정리
 - 중요도 점수나 페이지 번호는 본문에 노출하지 말 것
-- 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 붙여주세요 (예: "[COLOR:yellow]## 개념명")
+- 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 반드시 붙여주세요
+  (반드시 색상명 포함: "[COLOR:yellow]## 개념명", "[COLOR:green]## 개념명" 형태여야 하며 "[COLOR]" 처럼 색상명 없이 쓰는 것은 잘못된 형식입니다)
 - 색상 정보가 없는 섹션은 태그 없이 "## 개념명" 그대로 작성
+- 입력 데이터의 "키워드:", "내용:" 형식을 그대로 복사하지 말고 반드시 새롭게 재구성해서 서술하세요
 
 [분석 데이터]
 {context}
@@ -146,12 +150,20 @@ async def _synthesize_summary(title: str, rows) -> str:
 def _build_markdown(title: str, synthesized_text: str) -> str:
     lines = [f"# {title} 요약본", ""]
     for line in synthesized_text.splitlines():
-        if line.startswith("[COLOR:") and "]" in line:
-            end = line.index("]")
-            color = line[7:end]
-            rest = line[end + 1:]
+        stripped = line.strip()
+        if stripped.startswith("[COLOR:") and "]" in stripped:
+            end = stripped.index("]")
+            color = stripped[7:end]
+            rest = stripped[end + 1:].lstrip()
             emoji = _EMOJI_MAP.get(color, "")
-            lines.append(f"{emoji} {rest}".strip() if emoji else rest)
+            if emoji and rest.startswith("## "):
+                lines.append(f"## {emoji} {rest[3:]}")
+            elif emoji and rest.startswith("# "):
+                lines.append(f"# {emoji} {rest[2:]}")
+            elif emoji:
+                lines.append(f"{emoji} {rest}")
+            else:
+                lines.append(rest)
         else:
             lines.append(line)
     lines.append("")
@@ -196,9 +208,17 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
 
         color_rgb = None
         if stripped.startswith("[COLOR:") and "]" in stripped:
+            # 원본 합성 텍스트: [COLOR:yellow]## 개념명
             end = stripped.index("]")
             color_rgb = _COLOR_MAP.get(stripped[7:end])
             stripped = stripped[end + 1:].lstrip()
+        else:
+            # 처리된 MD 텍스트: ## 🟡 개념명 (이모지 → 색상 역매핑)
+            for emoji, color_name in _COLOR_FROM_EMOJI.items():
+                if emoji in stripped:
+                    color_rgb = _COLOR_MAP.get(color_name)
+                    stripped = stripped.replace(emoji, "").strip()
+                    break
 
         # PDF는 마크다운 볼드(**)를 이해 못하므로 제거
         clean = stripped.replace("**", "")
