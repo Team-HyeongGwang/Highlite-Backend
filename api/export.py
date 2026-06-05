@@ -5,9 +5,14 @@ from urllib.parse import quote
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+import os
 import fitz  # PyMuPDF
 import openai
 from dotenv import load_dotenv
+
+# 한글 TrueType 폰트 (Windows 맑은 고딕 우선, 없으면 내장 CJK 폰트)
+_KO_FONT_PATH = r"C:\Windows\Fonts\malgun.ttf"
+_USE_TTF = os.path.exists(_KO_FONT_PATH)
 
 from db.database import get_db
 from db.models import ImportanceResult, DocumentChunk, Document, Question, QuizResult, UserAnswer, User
@@ -21,6 +26,7 @@ _EMOJI_MAP = {
     "yellow": "🟡", "red": "🔴", "orange": "🟠",
     "green": "🟢", "blue": "🔵", "purple": "🟣", "black": "⚫",
 }
+_EMOJI_TO_COLOR = {v: k for k, v in _EMOJI_MAP.items()}
 
 _COLOR_MAP = {
     "yellow": (1.0, 0.85, 0.0),
@@ -126,6 +132,7 @@ async def _synthesize_summary(title: str, rows) -> str:
 - 중요도 점수나 페이지 번호는 본문에 노출하지 말 것
 - 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 붙여주세요 (예: "[COLOR:yellow]## 개념명")
 - 색상 정보가 없는 섹션은 태그 없이 "## 개념명" 그대로 작성
+- 입력 데이터의 "키워드:", "내용:" 형식을 그대로 복사하지 말고 반드시 새롭게 재구성해서 서술하세요
 
 [분석 데이터]
 {context}
@@ -163,9 +170,13 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
     doc = fitz.open()
 
     def new_page():
-        return doc.new_page(width=W, height=H), MARGIN
+        p = doc.new_page(width=W, height=H)
+        if _USE_TTF:
+            p.insert_font(fontname="ko", fontfile=_KO_FONT_PATH)
+        return p, MARGIN
 
     page, y = new_page()
+    _fn = "ko" if _USE_TTF else "korea"
 
     def writebox(text: str, fontsize: int, gap: int, indent: int = 0, color: tuple = None):
         nonlocal page, y
@@ -174,9 +185,9 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
         available_h = H - MARGIN - y
         rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + available_h)
         if color:
-            result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0, color=color)
+            result = page.insert_textbox(rect, text, fontname=_fn, fontsize=fontsize, align=0, color=color)
         else:
-            result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
+            result = page.insert_textbox(rect, text, fontname=_fn, fontsize=fontsize, align=0)
         used_h = available_h - max(0.0, result)
         if color:
             page.draw_line(
@@ -199,6 +210,12 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
             end = stripped.index("]")
             color_rgb = _COLOR_MAP.get(stripped[7:end])
             stripped = stripped[end + 1:].lstrip()
+        else:
+            for emoji, color_name in _EMOJI_TO_COLOR.items():
+                if stripped.startswith(emoji):
+                    color_rgb = _COLOR_MAP.get(color_name)
+                    stripped = stripped[len(emoji):].lstrip()
+                    break
 
         # PDF는 마크다운 볼드(**)를 이해 못하므로 제거
         clean = stripped.replace("**", "")
@@ -219,39 +236,33 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
 async def export_questions(
     group_id: str = Query(..., description="문서 그룹 ID"),
     format: str = Query("md", description="내보내기 형식: md 또는 pdf"),
-    filter: str = Query("전체", description="전체/핵심만/중요만/오답만"),
-    user_id: Optional[int] = Query(None, description="오답만 필터 시 필요"),
+    filter: str = Query("전체", description="전체/핵심만/중요만/오답"),
+    user_id: Optional[int] = Query(None, description="오답/핵심만/중요만 필터 시 필요"),
+    quiz_group_id: Optional[str] = Query(None, description="특정 회차 ID"),
     db: AsyncSession = Depends(get_db),
 ):
-    max_round_stmt = (
-        select(func.max(Question.round_number))
-        .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
-        .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
-        .join(Document, DocumentChunk.document_id == Document.id)
-        .where(Document.group_id == group_id)
-    )
-    max_round = (await db.execute(max_round_stmt)).scalar()
+    import uuid as _uuid
 
-    if max_round is None:
-        raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
-
-    # 오답만: 가장 최근 quiz_result의 오답 question_id 목록 먼저 수집
+    # 오답 필터: 해당 회차의 quiz_result에서 오답 question_id 수집
     wrong_question_ids = None
-    if filter == "오답만":
+    if filter == "오답":
         if not user_id:
-            raise HTTPException(status_code=400, detail="오답만 필터는 user_id가 필요합니다.")
-        sibling_ids = [
-            r[0] for r in (await db.execute(
-                select(Document.id).where(Document.group_id == group_id)
-            )).all()
-        ]
-        latest_qr = (await db.execute(
+            raise HTTPException(status_code=400, detail="오답 필터는 user_id가 필요합니다.")
+        qr_stmt = (
             select(QuizResult)
             .where(QuizResult.user_id == user_id)
-            .where(QuizResult.document_id.in_(sibling_ids))
             .order_by(QuizResult.created_at.desc())
-            .limit(1)
-        )).scalar_one_or_none()
+        )
+        if quiz_group_id:
+            qr_stmt = qr_stmt.where(QuizResult.quiz_group_id == _uuid.UUID(quiz_group_id))
+        else:
+            sibling_ids = [
+                r[0] for r in (await db.execute(
+                    select(Document.id).where(Document.group_id == group_id)
+                )).all()
+            ]
+            qr_stmt = qr_stmt.where(QuizResult.document_id.in_(sibling_ids))
+        latest_qr = (await db.execute(qr_stmt.limit(1))).scalar_one_or_none()
         if not latest_qr:
             raise HTTPException(status_code=404, detail="채점 기록이 없습니다.")
         wrong_question_ids = [
@@ -264,17 +275,32 @@ async def export_questions(
         if not wrong_question_ids:
             raise HTTPException(status_code=404, detail="오답이 없습니다.")
 
+    # 회차 특정: quiz_group_id 있으면 그 회차, 없으면 max_round
     stmt = (
         select(Question, Document, DocumentChunk)
         .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
         .where(Document.group_id == group_id)
-        .where(Question.round_number == max_round)
         .order_by(Question.id)
     )
 
-    if filter == "오답만":
+    if quiz_group_id:
+        stmt = stmt.where(Question.quiz_group_id == _uuid.UUID(quiz_group_id))
+    else:
+        max_round_stmt = (
+            select(func.max(Question.round_number))
+            .join(ImportanceResult, Question.importance_id == ImportanceResult.id)
+            .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(Document.group_id == group_id)
+        )
+        max_round = (await db.execute(max_round_stmt)).scalar()
+        if max_round is None:
+            raise HTTPException(status_code=404, detail="해당 문서의 문제가 없습니다.")
+        stmt = stmt.where(Question.round_number == max_round)
+
+    if filter == "오답":
         stmt = stmt.where(Question.id.in_(wrong_question_ids))
 
     rows = (await db.execute(stmt)).all()
@@ -374,9 +400,13 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
     doc = fitz.open()
 
     def new_page():
-        return doc.new_page(width=W, height=H), MARGIN
+        p = doc.new_page(width=W, height=H)
+        if _USE_TTF:
+            p.insert_font(fontname="ko", fontfile=_KO_FONT_PATH)
+        return p, MARGIN
 
     page, y = new_page()
+    _fn = "ko" if _USE_TTF else "korea"
 
     def writebox(text: str, fontsize: int, gap: int, indent: int = 0):
         nonlocal page, y
@@ -384,7 +414,7 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
             page, y = new_page()
         available_h = H - MARGIN - y
         rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + available_h)
-        result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
+        result = page.insert_textbox(rect, text, fontname=_fn, fontsize=fontsize, align=0)
         y += (available_h - max(0.0, result)) + gap
 
     # 문제지
@@ -397,7 +427,7 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
         if q.difficulty:
             header += f"  ·  난이도: {q.difficulty}"
         writebox(header, fontsize=12, gap=8)
-        writebox(q.question_text, fontsize=10, gap=6, indent=10)
+        writebox(q.question_text.replace("**", ""), fontsize=10, gap=6, indent=10)
         if q.options:
             for key, value in q.options.items():
                 writebox(f"{key} {value}", fontsize=10, gap=3, indent=20)
@@ -409,7 +439,7 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
 
     for i, q in enumerate(questions, 1):
         writebox(f"문제 {i}", fontsize=12, gap=6)
-        writebox(f"정답: {q.answer}", fontsize=10, gap=4, indent=10)
-        writebox(f"해설: {q.explanation}", fontsize=10, gap=14, indent=10)
+        writebox(f"정답: {q.answer.replace('**', '')}", fontsize=10, gap=4, indent=10)
+        writebox(f"해설: {q.explanation.replace('**', '')}", fontsize=10, gap=14, indent=10)
 
     return doc.tobytes()
