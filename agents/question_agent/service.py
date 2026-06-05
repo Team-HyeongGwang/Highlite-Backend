@@ -253,7 +253,7 @@ async def call_claude(prompt: str) -> dict:
 # ────────────────────────────────────────
 async def call_gpt(prompt: str) -> dict:
     response = await gpt_client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1",
         max_tokens=1000,
         temperature=0.7,
         messages=[{"role": "user", "content": prompt}],
