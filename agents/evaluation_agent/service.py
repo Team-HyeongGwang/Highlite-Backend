@@ -50,9 +50,6 @@ async def review(req: QuestionReviewRequest) -> QuestionReviewResponse:
 
 검수 기준:
 0. [즉시 반려] question_text에 "문제:", "보기:", "정답:", "해설:" 등의 문자열이 포함되어 있으면 is_approved=false, quality_score=1로 설정하세요. 이는 선지나 정답/해설이 문제 지문에 그대로 노출된 심각한 오류입니다.
-검수 기준:
-0. [즉시 반려] question_text에 "문제:", "보기:", "정답:", "해설:" 등의 문자열이 포함되어 있으면 is_approved=false, quality_score=1로 설정하세요.
-
 0-1. [즉시 반려] 아래 패턴 중 하나라도 해당하면 is_approved=false, quality_score=1로 설정하세요:
    - '오늘 수업 핵심 N줄', '수업 목적', '강의명', '교수명' 등 강의/수업 메타 정보를 묻는 문제
    - 원문 속 질문 문구('~는 어떤 사람인가?', '~란 무엇인가?')를 그대로 문제화한 경우
