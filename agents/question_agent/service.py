@@ -382,8 +382,6 @@ async def _generate_questions_from_chunks(
         question_type = get_question_type(priority)
         keywords = importance.keywords or []
 
-        print(f"[DEBUG] [{task_idx+1}] question_type={question_type}, keywords={keywords}, original_text_length={len(chunk.original_text) if chunk.original_text else 0}")
-
         try:
             prompt = build_prompt(chunk.original_text, keywords, question_type)
             prompt += prompt
@@ -394,8 +392,6 @@ async def _generate_questions_from_chunks(
         if not prompt or not isinstance(prompt, str):
             print(f"[문제 생성] [{task_idx+1}] 프롬프트 생성 실패: prompt={prompt}")
             return None
-
-        print(f"[DEBUG] chunk_id={chunk.id} original_text 앞부분={chunk.original_text[:50] if chunk.original_text else 'None'}")
 
         claude_result, gpt_result = await asyncio.gather(
             call_claude(prompt),
@@ -549,8 +545,6 @@ async def generate_questions_service(
 
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
-    print(f"[DEBUG] highlighter_ranking: {highlighter_ranking}")
-    print(f"[DEBUG] pen_ranking: {pen_ranking}")    
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -559,7 +553,6 @@ async def generate_questions_service(
             highlighter_ranking,
             pen_ranking,
         )
-        print(f"[DEBUG] chunk_id={chunk.id} meta_data={chunk.meta_data} → priority={priority}")
         chunks_by_priority[priority].append((importance, chunk))
 
     quiz_group_id = uuid_lib.uuid4()
@@ -1032,7 +1025,6 @@ async def get_questions_by_group_service(
     questions = []
     for idx, (question, importance, chunk) in enumerate(rows):
         source_type = get_source_type(chunk.meta_data or [])
-        print(f"[DEBUG] chunk_id={chunk.id} meta_data={chunk.meta_data} → source_type={source_type}")
         priority = int(question.difficulty) if question.difficulty else 3
         options = question.options if question.options else None
 
