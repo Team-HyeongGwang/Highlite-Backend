@@ -325,21 +325,47 @@ async def _generate_questions_from_chunks(
     print(f"[문제 생성] 우선순위 분배: {counts}")
 
     task_list = []
+    used_chunk_ids = set()  # ← 중복 청크 방지용 집합
+
     for priority, target_count in counts.items():
         pool = chunks_by_priority.get(priority, [])
         if not pool:
             continue
         pool_sorted = sorted(pool, key=lambda x: x[0].score, reverse=True)
-        pool_extended = []
-        while len(pool_extended) < target_count * 2:
-            pool_extended += pool_sorted
-        pool_extended = pool_extended[:target_count * 2]
-        for importance, chunk in pool_extended[:target_count]:
-            # ← original_text가 None인 청크 제외
+
+        # ── 수정: 같은 청크 중복 선택 방지 ──
+        added = 0
+        for importance, chunk in pool_sorted:
+            if added >= target_count:
+                break
+            if chunk.id in used_chunk_ids:  # 이미 선택된 청크 스킵
+                continue
             if not chunk.original_text or not chunk.original_text.strip():
                 print(f"[문제 생성] chunk_id={chunk.id} original_text 없음 → 스킵")
                 continue
             task_list.append((priority, importance, chunk))
+            used_chunk_ids.add(chunk.id)
+            added += 1
+
+        # ── 수정: 해당 priority 청크가 부족하면 다른 priority 청크로 보충 ──
+        if added < target_count:
+            print(f"[문제 생성] priority={priority} 청크 부족 ({added}/{target_count}) → 다른 priority로 보충")
+            for fallback_priority in [1, 2, 3]:
+                if fallback_priority == priority:
+                    continue
+                fallback_pool = chunks_by_priority.get(fallback_priority, [])
+                for importance, chunk in sorted(fallback_pool, key=lambda x: x[0].score, reverse=True):
+                    if added >= target_count:
+                        break
+                    if chunk.id in used_chunk_ids:
+                        continue
+                    if not chunk.original_text or not chunk.original_text.strip():
+                        continue
+                    task_list.append((priority, importance, chunk))
+                    used_chunk_ids.add(chunk.id)
+                    added += 1
+                if added >= target_count:
+                    break
 
     print(f"[문제 생성] 총 {len(task_list)}개 청크 대상 선정 완료")
 
@@ -353,6 +379,7 @@ async def _generate_questions_from_chunks(
 
         try:
             prompt = build_prompt(chunk.original_text, keywords, question_type)
+            prompt += prompt
         except Exception as e:
             print(f"[문제 생성] [{task_idx+1}] build_prompt 예외: {type(e).__name__}: {e}")
             return None
@@ -362,7 +389,7 @@ async def _generate_questions_from_chunks(
             return None
 
         print(f"[DEBUG] chunk_id={chunk.id} original_text 앞부분={chunk.original_text[:50] if chunk.original_text else 'None'}")
-        
+
         claude_result, gpt_result = await asyncio.gather(
             call_claude(prompt),
             call_gpt(prompt),
