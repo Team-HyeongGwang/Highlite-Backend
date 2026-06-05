@@ -142,17 +142,22 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
             
             try:
                 response = await cached_llm.ainvoke(messages)
-            except (ServiceUnavailable, ResourceExhausted) as e:
-                # 캐시 히트였지만 추론 단계에서 503/429 → Flash 캐시로 재시도
-                print(f"[Fallback ⚠️] {page_num}p 캐시 추론 실패 ({type(e).__name__}) — Flash 캐시로 폴백합니다.")
-                cached_llm_flash = ChatGoogleGenerativeAI(
-                    model="gemini-2.5-flash",
-                    temperature=0,
-                    google_api_key=GOOGLE_API_KEY,
-                    cached_content=cache.name,
-                )
                 
-                response = await cached_llm_flash.ainvoke(messages)
+            except Exception as e:
+                # 🎯 [변경] 429 / 503 문자열 필터링 그물
+                err_msg = str(e)
+                if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "503", "ServiceUnavailable"]):
+                    print(f"[Fallback ⚠️] {page_num}p 캐시 추론 실패 ({type(e).__name__}) — 429/503 감지되어 Flash 캐시로 폴백합니다.")
+                    cached_llm_flash = ChatGoogleGenerativeAI(
+                        model="gemini-2.5-flash",
+                        temperature=0,
+                        google_api_key=GOOGLE_API_KEY,
+                        cached_content=cache.name,
+                    )
+                    response = await cached_llm_flash.ainvoke(messages)
+                else:
+                    # 429/503이 아닌 에러(코딩 오타, 인증 실패 등)는 그대로 터뜨려 디버깅 확보
+                    raise
         
         else:
             # 캐시가 없거나 만료된 경우, 직접 프롬프트 주입
@@ -166,9 +171,15 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
             ]
             try:
                 response = await llm_pro.ainvoke(messages)
-            except (ServiceUnavailable, ResourceExhausted) as e:
-                print(f"[Fallback ⚠️] {page_num}p Pro 직접 호출 실패 ({type(e).__name__}) — Flash로 폴백합니다.")
-                response = await llm_flash.ainvoke(messages)
+            except Exception as e:
+                # 🎯 [변경] 429 / 503 문자열 필터링 그물
+                err_msg = str(e)
+                if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "503", "ServiceUnavailable"]):
+                    print(f"[Fallback ⚠️] {page_num}p Pro 직접 호출 실패 ({type(e).__name__}) — 429/503 감지되어 Flash로 폴백합니다.")
+                    response = await llm_flash.ainvoke(messages)
+                else:
+                    # 나머지 예상치 못한 에러는 그대로 위로 던짐
+                    raise
             
         page_chunks = []
         try:
