@@ -193,7 +193,14 @@ def build_prompt(
 제공된 [원문]과 [핵심 키워드]를 바탕으로, 단순 암기(Recall)를 넘어 개념 적용 및 분석 능력을 평가할 수 있는 고품격 문제를 출제해줘.
 
 [최우선 준수 원칙]
-1. 실질 개념 출제 원칙: [원문]에 "[필기: ...]", "[별표]", "[밑줄]" 등의 메타 태그가 포함된 경우, 해당 태그 자체나 과목명·필기 형식을 묻는 문제는 절대 출제하지 마세요. 반드시 태그 안에 담긴 실질적인 학습 개념과 내용을 바탕으로 출제해야 합니다.
+1. 실질 개념 출제 원칙: [원문]에 "[필기: ...]", "[별표]", "[밑줄]" 등의 메타 태그가 포함된 경우, 해당 태그 자체나 과목명·필기 형식을 묻는 문제는 절대 출제하지 마세요.
+   추가 금지 패턴:
+   - 강의명, 교수명, 수업 메타 정보를 묻는 문제
+   - 원문 속 질문 문구를 그대로 문제로 전환하는 것
+   - 선지가 '원문에서 언급됨', '원문에서 묘사됨' 형태로 원문 존재 여부만 묻는 문제
+   - 원문에 포함된 ①②③④ 같은 번호 표시를 선지에 그대로 노출하는 것
+   - '[필기: ...]' 태그의 내용을 빈칸으로 만드는 것
+   반드시 원문의 핵심 개념(정의, 특징, 원리, 메커니즘)을 이해해야 풀 수 있는 문제를 출제하세요.
 2. 단일 포인트 집중 출제: 제공된 [원문]에서 가장 핵심적인 개념 포인트 하나에만 집중하여 출제하세요. 여러 개념을 한 문제에 혼합하거나 지엽적인 세부 사항을 묻지 마세요.
 
 [원문]
@@ -375,8 +382,6 @@ async def _generate_questions_from_chunks(
         question_type = get_question_type(priority)
         keywords = importance.keywords or []
 
-        print(f"[DEBUG] [{task_idx+1}] question_type={question_type}, keywords={keywords}, original_text_length={len(chunk.original_text) if chunk.original_text else 0}")
-
         try:
             prompt = build_prompt(chunk.original_text, keywords, question_type)
             prompt += prompt
@@ -387,8 +392,6 @@ async def _generate_questions_from_chunks(
         if not prompt or not isinstance(prompt, str):
             print(f"[문제 생성] [{task_idx+1}] 프롬프트 생성 실패: prompt={prompt}")
             return None
-
-        print(f"[DEBUG] chunk_id={chunk.id} original_text 앞부분={chunk.original_text[:50] if chunk.original_text else 'None'}")
 
         claude_result, gpt_result = await asyncio.gather(
             call_claude(prompt),
@@ -542,8 +545,6 @@ async def generate_questions_service(
 
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
-    print(f"[DEBUG] highlighter_ranking: {highlighter_ranking}")
-    print(f"[DEBUG] pen_ranking: {pen_ranking}")    
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -552,7 +553,6 @@ async def generate_questions_service(
             highlighter_ranking,
             pen_ranking,
         )
-        print(f"[DEBUG] chunk_id={chunk.id} meta_data={chunk.meta_data} → priority={priority}")
         chunks_by_priority[priority].append((importance, chunk))
 
     quiz_group_id = uuid_lib.uuid4()
@@ -1025,7 +1025,6 @@ async def get_questions_by_group_service(
     questions = []
     for idx, (question, importance, chunk) in enumerate(rows):
         source_type = get_source_type(chunk.meta_data or [])
-        print(f"[DEBUG] chunk_id={chunk.id} meta_data={chunk.meta_data} → source_type={source_type}")
         priority = int(question.difficulty) if question.difficulty else 3
         options = question.options if question.options else None
 
