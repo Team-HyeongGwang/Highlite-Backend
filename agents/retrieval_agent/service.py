@@ -25,15 +25,13 @@ from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
 from ranks.service import get_ranking
 
-
-
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro", 
+    model="gemini-2.5-flash", 
     temperature=0,
     google_api_key=GOOGLE_API_KEY,
 )
@@ -68,10 +66,10 @@ def parse_chunk(raw: dict, pdf_name: str) -> PDFChunk:
 # ── DB에 Document 저장 ────────────────────────────────────────
 async def init_document(input_data: dict) -> dict:
     pdf_path: Path = input_data["pdf_path"]
-
+    
     # 파이프라인을 통해 전달된 doc_type 딕셔너리 추출
     doc_type_info = input_data.get("doc_type", {})
-
+    
     document = Document(
         user_id=input_data["user_id"],
         group_id=str(input_data["group_id"]),
@@ -81,7 +79,7 @@ async def init_document(input_data: dict) -> dict:
     session: AsyncSession = input_data["session"]
     session.add(document)
     await session.flush() 
-
+    
     print(f"[1] document 생성 완료 id={document.id}")
     input_data["document_id"] = document.id
     return input_data
@@ -91,32 +89,32 @@ async def init_document(input_data: dict) -> dict:
 async def extract_pdf_to_raw(input_data: dict) -> dict:
     pdf_path: Path = input_data["pdf_path"]
     raw_chunks = []
-
+    
     pages_data = []
     with fitz.open(str(pdf_path)) as doc:
         for page_num, page in enumerate(doc, start=1):
             pix = page.get_pixmap(dpi=150) # 유료니까 해상도 150으로 선명하게!
             b64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
             pages_data.append((page_num, b64))
-
+            
     print(f"\n[2-1] 총 {len(pages_data)}장 이미지 변환 완료. 제미나이 분석 시작 (유료 모드 풀가동 🚀)...")
 
     # ⭐️ 1. 1장씩만 깔끔하게 분석하는 함수
     async def process_single_page(page_num, b64):
         from .primer import get_cache, SYSTEM_PROMPT
-
+        
         # 1) primer.py에서 구워진 캐시 스냅샷 확보 시도
         cache = None
         try:
             cache = get_cache()
         except Exception:
             pass # 캐시가 생성되지 않았거나 에러가 나면 안전하게 None 유지
-
+        
         # 2) 캐시 유무(TTL 만료 포함)에 따른 분기 처리
         if cache and hasattr(cache, 'name'):
             # 캐시가 유효할 때는, 캐시에서 바로 결과 few-shot prompting 정보를 가져옴
             cached_llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-pro", 
+                model="gemini-2.5-flash", 
                 temperature=0,
                 google_api_key=GOOGLE_API_KEY,
                 cached_content=cache.name  # 구워진 캐시 ID 매핑
@@ -128,7 +126,7 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                 ])
             ]
             invocation_target = cached_llm
-
+        
         else:
             # 캐시가 없거나 만료된 경우, 직접 프롬프트 주입
             print(f"[Fallback ⚠️] {page_num} 페이지 분석에 캐시를 찾을 수 없어 일반 호출(프롬프트 직접 포함)로 우회합니다.")
@@ -140,10 +138,10 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                 ])
             ]
             invocation_target = llm
-
+            
             # 3) 최종 결정된 타겟으로 LLM 호출
         response = await invocation_target.ainvoke(messages)
-
+        
         page_chunks = []
         try:
             raw_content = response.content
@@ -151,14 +149,14 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                 raw_text = "".join([str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in raw_content])
             else:
                 raw_text = str(raw_content)
-
+                
             raw_text = raw_text.strip()
-
+            
             if raw_text.startswith("```json"):
                 raw_text = raw_text[7:-3].strip()
             elif raw_text.startswith("```"):
                 raw_text = raw_text[3:-3].strip()
-
+                
             paragraphs = json.loads(raw_text)
             for para_idx, item in enumerate(paragraphs, start=1):
                 if isinstance(item, dict):
@@ -171,25 +169,25 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                     })
         except Exception as e:
             print(f"[Error] {page_num} 페이지 파싱 실패: {e}")
-
+            
         print(f"   -> {page_num} 페이지 추출 완료! ⚡️")
         return page_chunks
 
     semaphore = asyncio.Semaphore(50)
-
+    
     async def sem_process(page_num, b64):
         async with semaphore:
             return await process_single_page(page_num, b64)
 
     tasks = [sem_process(page_num, b64) for page_num, b64 in pages_data]
     results = await asyncio.gather(*tasks)
-
+    
     for res in results:
         if res:
             raw_chunks.extend(res)
 
     raw_chunks.sort(key=lambda x: (x.get("page", 0), x.get("paragraph_index", 0)))
-
+    
     print(f"\n[2-2] PDF 파싱 완료! 총 청크 개수: {len(raw_chunks)}")
     input_data["raw_chunks"] = raw_chunks  
     return input_data
@@ -235,7 +233,7 @@ async def save_embeddings_to_db(input: dict) -> dict:
     session: AsyncSession = input["session"]
 
     db_chunks = []
-
+    
     for chunk in chunks:
         db_chunk = DocumentChunk(
             document_id=document_id,
@@ -248,18 +246,15 @@ async def save_embeddings_to_db(input: dict) -> dict:
                 "handwriting_color": chunk.handwriting_color,
                 "highlight_color": chunk.highlight_color,
             },
-
-
-
         )
         session.add(db_chunk)
         db_chunks.append(db_chunk)
-
+        
     await session.flush() 
-
+    
     for chunk, db_chunk in zip(chunks, db_chunks):
         chunk.db_id = db_chunk.id  
-
+        
     return input
 
 
@@ -269,7 +264,7 @@ async def send_to_importance_agent(input: dict) -> dict:
     session: AsyncSession = input["session"]
     user_id: int = input["user_id"]
     group_id = str(input["group_id"])
-
+    
     doc_type = "pdf"
 
     ranking = await get_ranking(user_id, session)
@@ -305,7 +300,7 @@ async def send_to_importance_agent(input: dict) -> dict:
         )
 
         tasks.append(sem_analyze(request))
-
+        
     # 에이전트들이 청크들을 병렬로 분석하고 결과만 배열로 모아옴
     llm_results = await asyncio.gather(*tasks)
 
@@ -314,9 +309,9 @@ async def send_to_importance_agent(input: dict) -> dict:
         session.add(db_result)
 
     await session.commit()
-
+    
     print(f"[Master Pipeline] 모든 청크의 중요도 분석 및 DB 저장이 완료되었습니다! 🎯")
-
+        
     return input
 
 
@@ -341,7 +336,7 @@ async def run_pdf_pipeline(
 ) -> None:
     try:
         print(f"\n[Master Pipeline] '{pdf_path.name}' 파이프라인 구동을 시작합니다... 🚀")
-
+        
         result = await pdf_pipeline_chain.ainvoke({
             "pdf_path": pdf_path,
             "user_id": user_id,
