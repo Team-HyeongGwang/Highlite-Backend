@@ -114,7 +114,7 @@ async def run_primer(input_data: dict) -> dict:
     # Google 서버와 통신하는 동기(Sync) 함수를 asyncio.to_thread로 감싸서 비동기로 처리
     _cache = await asyncio.to_thread(
         caching.CachedContent.create,
-        model="models/gemini-2.5-pro",
+        model="models/gemini-2.5-flash",
         system_instruction=SYSTEM_PROMPT,
         contents=contents,
         ttl=datetime.timedelta(hours=6),
