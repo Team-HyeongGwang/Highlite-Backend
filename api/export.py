@@ -5,9 +5,14 @@ from urllib.parse import quote
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+import os
 import fitz  # PyMuPDF
 import openai
 from dotenv import load_dotenv
+
+# 한글 TrueType 폰트 (Windows 맑은 고딕 우선, 없으면 내장 CJK 폰트)
+_KO_FONT_PATH = r"C:\Windows\Fonts\malgun.ttf"
+_USE_TTF = os.path.exists(_KO_FONT_PATH)
 
 from db.database import get_db
 from db.models import ImportanceResult, DocumentChunk, Document, Question, QuizResult, UserAnswer, User
@@ -21,6 +26,7 @@ _EMOJI_MAP = {
     "yellow": "🟡", "red": "🔴", "orange": "🟠",
     "green": "🟢", "blue": "🔵", "purple": "🟣", "black": "⚫",
 }
+_EMOJI_TO_COLOR = {v: k for k, v in _EMOJI_MAP.items()}
 
 _COLOR_MAP = {
     "yellow": (1.0, 0.85, 0.0),
@@ -31,8 +37,6 @@ _COLOR_MAP = {
     "purple": (0.5, 0.1,  0.8),
     "black":  (0.1, 0.1,  0.1),
 }
-
-_COLOR_FROM_EMOJI = {v: k for k, v in _EMOJI_MAP.items()}
 
 
 @router.get("/summary")
@@ -126,8 +130,7 @@ async def _synthesize_summary(title: str, rows) -> str:
   3. **한줄요약**: 이 개념에서 가장 중요한 한 가지를 한 문장으로
 - 마지막에 "## 핵심 키워드 정리" 섹션으로 전체 키워드를 "- 키워드: 한 줄 설명" 형식으로 정리
 - 중요도 점수나 페이지 번호는 본문에 노출하지 말 것
-- 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 반드시 붙여주세요
-  (반드시 색상명 포함: "[COLOR:yellow]## 개념명", "[COLOR:green]## 개념명" 형태여야 하며 "[COLOR]" 처럼 색상명 없이 쓰는 것은 잘못된 형식입니다)
+- 입력 데이터에 "색상" 필드가 있는 섹션은 "## 개념명" 앞에 "[COLOR:색상명]" 태그를 붙여주세요 (예: "[COLOR:yellow]## 개념명")
 - 색상 정보가 없는 섹션은 태그 없이 "## 개념명" 그대로 작성
 - 입력 데이터의 "키워드:", "내용:" 형식을 그대로 복사하지 말고 반드시 새롭게 재구성해서 서술하세요
 
@@ -150,22 +153,12 @@ async def _synthesize_summary(title: str, rows) -> str:
 def _build_markdown(title: str, synthesized_text: str) -> str:
     lines = [f"# {title} 요약본", ""]
     for line in synthesized_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[COLOR") and "]" in stripped:
-            end = stripped.index("]")
-            # [COLOR:yellow] → "yellow" / [COLOR] → "" (색상명 없음)
-            color = stripped[7:end].lstrip(":").strip() if end > 6 else ""
-            rest = stripped[end + 1:].lstrip()
+        if line.startswith("[COLOR:") and "]" in line:
+            end = line.index("]")
+            color = line[7:end]
+            rest = line[end + 1:]
             emoji = _EMOJI_MAP.get(color, "")
-            if emoji and rest.startswith("## "):
-                lines.append(f"## {emoji} {rest[3:]}")
-            elif emoji and rest.startswith("# "):
-                lines.append(f"# {emoji} {rest[2:]}")
-            elif emoji:
-                lines.append(f"{emoji} {rest}")
-            else:
-                # 색상명 없거나 매핑 없으면 태그 제거 후 내용만 출력
-                lines.append(rest if rest else "")
+            lines.append(f"{emoji} {rest}".strip() if emoji else rest)
         else:
             lines.append(line)
     lines.append("")
@@ -177,9 +170,13 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
     doc = fitz.open()
 
     def new_page():
-        return doc.new_page(width=W, height=H), MARGIN
+        p = doc.new_page(width=W, height=H)
+        if _USE_TTF:
+            p.insert_font(fontname="ko", fontfile=_KO_FONT_PATH)
+        return p, MARGIN
 
     page, y = new_page()
+    _fn = "ko" if _USE_TTF else "korea"
 
     def writebox(text: str, fontsize: int, gap: int, indent: int = 0, color: tuple = None):
         nonlocal page, y
@@ -188,9 +185,9 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
         available_h = H - MARGIN - y
         rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + available_h)
         if color:
-            result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0, color=color)
+            result = page.insert_textbox(rect, text, fontname=_fn, fontsize=fontsize, align=0, color=color)
         else:
-            result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
+            result = page.insert_textbox(rect, text, fontname=_fn, fontsize=fontsize, align=0)
         used_h = available_h - max(0.0, result)
         if color:
             page.draw_line(
@@ -209,18 +206,15 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
             continue
 
         color_rgb = None
-        if stripped.startswith("[COLOR") and "]" in stripped:
-            # 원본 합성 텍스트: [COLOR:yellow]## 개념명 또는 [COLOR]## 개념명
+        if stripped.startswith("[COLOR:") and "]" in stripped:
             end = stripped.index("]")
-            color = stripped[7:end].lstrip(":").strip() if end > 6 else ""
-            color_rgb = _COLOR_MAP.get(color)
+            color_rgb = _COLOR_MAP.get(stripped[7:end])
             stripped = stripped[end + 1:].lstrip()
         else:
-            # 처리된 MD 텍스트: ## 🟡 개념명 (이모지 → 색상 역매핑)
-            for emoji, color_name in _COLOR_FROM_EMOJI.items():
-                if emoji in stripped:
+            for emoji, color_name in _EMOJI_TO_COLOR.items():
+                if stripped.startswith(emoji):
                     color_rgb = _COLOR_MAP.get(color_name)
-                    stripped = stripped.replace(emoji, "").strip()
+                    stripped = stripped[len(emoji):].lstrip()
                     break
 
         # PDF는 마크다운 볼드(**)를 이해 못하므로 제거
@@ -406,9 +400,13 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
     doc = fitz.open()
 
     def new_page():
-        return doc.new_page(width=W, height=H), MARGIN
+        p = doc.new_page(width=W, height=H)
+        if _USE_TTF:
+            p.insert_font(fontname="ko", fontfile=_KO_FONT_PATH)
+        return p, MARGIN
 
     page, y = new_page()
+    _fn = "ko" if _USE_TTF else "korea"
 
     def writebox(text: str, fontsize: int, gap: int, indent: int = 0):
         nonlocal page, y
@@ -416,7 +414,7 @@ def _build_questions_pdf(title: str, questions: list) -> bytes:
             page, y = new_page()
         available_h = H - MARGIN - y
         rect = fitz.Rect(MARGIN + indent, y, W - MARGIN, y + available_h)
-        result = page.insert_textbox(rect, text, fontname="korea", fontsize=fontsize, align=0)
+        result = page.insert_textbox(rect, text, fontname=_fn, fontsize=fontsize, align=0)
         y += (available_h - max(0.0, result)) + gap
 
     # 문제지
