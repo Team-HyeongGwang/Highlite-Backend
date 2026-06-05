@@ -151,9 +151,10 @@ def _build_markdown(title: str, synthesized_text: str) -> str:
     lines = [f"# {title} 요약본", ""]
     for line in synthesized_text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("[COLOR:") and "]" in stripped:
+        if stripped.startswith("[COLOR") and "]" in stripped:
             end = stripped.index("]")
-            color = stripped[7:end]
+            # [COLOR:yellow] → "yellow" / [COLOR] → "" (색상명 없음)
+            color = stripped[7:end].lstrip(":").strip() if end > 6 else ""
             rest = stripped[end + 1:].lstrip()
             emoji = _EMOJI_MAP.get(color, "")
             if emoji and rest.startswith("## "):
@@ -163,7 +164,8 @@ def _build_markdown(title: str, synthesized_text: str) -> str:
             elif emoji:
                 lines.append(f"{emoji} {rest}")
             else:
-                lines.append(rest)
+                # 색상명 없거나 매핑 없으면 태그 제거 후 내용만 출력
+                lines.append(rest if rest else "")
         else:
             lines.append(line)
     lines.append("")
@@ -207,10 +209,11 @@ def _build_pdf(title: str, synthesized_text: str) -> bytes:
             continue
 
         color_rgb = None
-        if stripped.startswith("[COLOR:") and "]" in stripped:
-            # 원본 합성 텍스트: [COLOR:yellow]## 개념명
+        if stripped.startswith("[COLOR") and "]" in stripped:
+            # 원본 합성 텍스트: [COLOR:yellow]## 개념명 또는 [COLOR]## 개념명
             end = stripped.index("]")
-            color_rgb = _COLOR_MAP.get(stripped[7:end])
+            color = stripped[7:end].lstrip(":").strip() if end > 6 else ""
+            color_rgb = _COLOR_MAP.get(color)
             stripped = stripped[end + 1:].lstrip()
         else:
             # 처리된 MD 텍스트: ## 🟡 개념명 (이모지 → 색상 역매핑)
