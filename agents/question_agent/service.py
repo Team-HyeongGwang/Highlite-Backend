@@ -189,7 +189,7 @@ def build_prompt(
         }
         feedback_guide = f"\n[중요 피드백 반영 지시]\n주의: {feedback_map.get(feedback_type, '')}"
 
-        return f"""너는 출제 오류율 0%를 자랑하는 대학교 전공 시험 출제위원이야.
+    return f"""너는 출제 오류율 0%를 자랑하는 대학교 전공 시험 출제위원이야.
 제공된 [원문]과 [핵심 키워드]를 바탕으로, 단순 암기(Recall)를 넘어 개념 적용 및 분석 능력을 평가할 수 있는 고품격 문제를 출제해줘.
 
 [최우선 준수 원칙]
@@ -335,6 +335,10 @@ async def _generate_questions_from_chunks(
             pool_extended += pool_sorted
         pool_extended = pool_extended[:target_count * 2]
         for importance, chunk in pool_extended[:target_count]:
+            # ← original_text가 None인 청크 제외
+            if not chunk.original_text or not chunk.original_text.strip():
+                print(f"[문제 생성] chunk_id={chunk.id} original_text 없음 → 스킵")
+                continue
             task_list.append((priority, importance, chunk))
 
     print(f"[문제 생성] 총 {len(task_list)}개 청크 대상 선정 완료")
@@ -344,8 +348,21 @@ async def _generate_questions_from_chunks(
 
         question_type = get_question_type(priority)
         keywords = importance.keywords or []
-        prompt = build_prompt(chunk.original_text, keywords, question_type)
 
+        print(f"[DEBUG] [{task_idx+1}] question_type={question_type}, keywords={keywords}, original_text_length={len(chunk.original_text) if chunk.original_text else 0}")
+
+        try:
+            prompt = build_prompt(chunk.original_text, keywords, question_type)
+        except Exception as e:
+            print(f"[문제 생성] [{task_idx+1}] build_prompt 예외: {type(e).__name__}: {e}")
+            return None
+
+        if not prompt or not isinstance(prompt, str):
+            print(f"[문제 생성] [{task_idx+1}] 프롬프트 생성 실패: prompt={prompt}")
+            return None
+
+        print(f"[DEBUG] chunk_id={chunk.id} original_text 앞부분={chunk.original_text[:50] if chunk.original_text else 'None'}")
+        
         claude_result, gpt_result = await asyncio.gather(
             call_claude(prompt),
             call_gpt(prompt),
@@ -361,6 +378,7 @@ async def _generate_questions_from_chunks(
         eval_tasks = []
         for source, result in [("claude", claude_result), ("gpt", gpt_result)]:
             if isinstance(result, Exception):
+                print(f"[문제 생성] [{task_idx+1}] {source} 실패: {type(result).__name__}: {result}")
                 continue
             valid_results.append((source, result))
             eval_tasks.append(call_evaluation(
