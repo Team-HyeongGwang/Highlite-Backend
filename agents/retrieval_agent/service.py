@@ -1,6 +1,5 @@
 import os
 import base64
-import re
 import fitz  # PyMuPDF
 import uuid
 import json
@@ -10,7 +9,6 @@ import asyncio
 from pathlib import Path
 from db.models import Document
 from agents.importance_agent.schemas import ImportanceRequest
-from typing import Optional
 from dotenv import load_dotenv
 
 from langchain_core.runnables import RunnableLambda
@@ -20,10 +18,12 @@ from langchain_openai import OpenAIEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import DocumentChunk
-from .schemas import PDFChunk
+from .schemas import PDFChunk, PageOutput
 from agents.importance_agent.service import analyze_chunk_importance
 from common.schemas import VisualCue
 from ranks.service import get_ranking
+
+from typing import List
 
 load_dotenv()
 
@@ -81,7 +81,7 @@ async def init_document(input_data: dict) -> dict:
     await session.flush() 
     
     print(f"[1] document 생성 완료 id={document.id}")
-    input_data["document_id"] = document.id
+    input_data["document_id"] = document.id  # 상태 추가
     return input_data
 
 
@@ -195,13 +195,9 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
 
 # ── 생 데이터를 PDFChunk로 내용 파싱 ────────────────────────────────────────
 async def process_raw_chunks(input_data: dict) -> dict:
-    raw_chunks = input_data["raw_chunks"]
-    pdf_name = input_data["pdf_path"].stem
-    
-    chunks = [parse_chunk(raw, pdf_name) for raw in raw_chunks]
+    chunks = input_data["raw_chunks"]  # PDFChunk 타입 
     print(f"[3] 청크 변환 완료 count={len(chunks)}")
-    
-    input_data["chunks"] = chunks  # 이제 아래의 rag_chain 단계들이 이 chunks를 소모합니다.
+    input_data["chunks"] = chunks
     return input_data
 
 
@@ -241,11 +237,13 @@ async def save_embeddings_to_db(input: dict) -> dict:
             original_text=chunk.content,
             embedding=chunk.embedding,
             meta_data={
-                "pdf_name": chunk.pdf_name,
                 "paragraph_index": chunk.paragraph_index,
                 "handwriting_color": chunk.handwriting_color,
                 "highlight_color": chunk.highlight_color,
-            },
+                "is_underline": chunk.is_underline,
+                "is_circled": chunk.is_circled,
+                "is_image": chunk.is_image,
+},
         )
         session.add(db_chunk)
         db_chunks.append(db_chunk)
@@ -319,7 +317,6 @@ async def send_to_importance_agent(input: dict) -> dict:
 pdf_pipeline_chain = (
     RunnableLambda(init_document)
     | RunnableLambda(extract_pdf_to_raw)
-    | RunnableLambda(process_raw_chunks)
     | RunnableLambda(receive_chunks)
     | RunnableLambda(embed_chunks)
     | RunnableLambda(save_embeddings_to_db)
@@ -337,16 +334,14 @@ async def run_pdf_pipeline(
     try:
         print(f"\n[Master Pipeline] '{pdf_path.name}' 파이프라인 구동을 시작합니다... 🚀")
         
-        result = await pdf_pipeline_chain.ainvoke({
+        await pdf_pipeline_chain.ainvoke({
             "pdf_path": pdf_path,
             "user_id": user_id,
             "group_id": group_id,
             "doc_type": doc_type,
             "session": session,
         })
-
         print(f"[Success] 전체 PDF 파이프라인 체인이 에러 없이 완주했습니다! 🎯\n")
-        return [result["document_id"]] # Response JSON에 출력 결과 담음
     except Exception as e:
         print(f"[Error] 파이프라인 수행 중 에러 발생: {e}")
         raise
