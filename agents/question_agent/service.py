@@ -61,11 +61,11 @@ def get_priority(meta_data, highlighter_ranking: dict, pen_ranking: dict) -> int
         handwriting_color = meta_data.get("handwriting_color")
 
         if highlight_color:
-            rank = highlighter_ranking.get(highlight_color, 99)
-            best = min(best, rank)
+            for color in [c.strip() for c in highlight_color.split(",")]:
+                best = min(best, highlighter_ranking.get(color, 99))
         if handwriting_color:
-            rank = pen_ranking.get(handwriting_color, 99)
-            best = min(best, rank)
+            for color in [c.strip() for c in handwriting_color.split(",")]:
+                best = min(best, pen_ranking.get(color, 99))
 
     return best if best != 99 else 3
 
@@ -90,6 +90,39 @@ def get_source_type(meta_data) -> str:
             return "highlight"
 
     return "highlight"
+
+# ────────────────────────────────────────
+# doc_type JSON 파싱
+# ────────────────────────────────────────
+def get_doc_category(doc_type_raw) -> str | None:
+    if not doc_type_raw:
+        return None
+    try:
+        parsed = json.loads(doc_type_raw) if isinstance(doc_type_raw, str) else doc_type_raw
+        return parsed.get("type")
+    except Exception:
+        return None
+
+# ────────────────────────────────────────
+# 교재 유사 청크 탐색 (in-memory cosine similarity)
+# ────────────────────────────────────────
+def _cosine_similarity(a, b) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+def find_best_match_chunk(query_emb, textbook_chunks: list):
+    if query_emb is None or not textbook_chunks:
+        return None
+    best, best_score = None, -1.0
+    for chunk in textbook_chunks:
+        if chunk.embedding is None:
+            continue
+        score = _cosine_similarity(list(query_emb), list(chunk.embedding))
+        if score > best_score:
+            best, best_score = chunk, score
+    return best
 
 # ────────────────────────────────────────
 # 문제 유형 결정
@@ -146,8 +179,23 @@ def build_prompt(
 {{
   "question_text": "질문 본문만 작성 (①~④ 선지 내용이나 '문제:', 'Q.' 등의 접두어 포함 절대 엄금)",
   "options": {{"①": "선지1 내용", "②": "선지2 내용", "③": "선지3 내용", "④": "선지4 내용"}},
-  "answer": "①", 
+  "answer": "①",
   "explanation": "최대 3문장 이내의 근거 중심 해설 (반드시 ①, ②, ③, ④ 기호를 명확히 언급하며 경어체로 작성)"
+}}
+
+[Few-shot 예시]
+예시 원문: "교착 상태(Deadlock)는 두 개 이상의 프로세스가 서로 상대방이 점유한 자원을 무한정 기다리는 상태이다. 교착 상태가 발생하려면 상호 배제, 점유와 대기, 비선점, 순환 대기의 4가지 조건이 동시에 충족되어야 한다."
+예시 출력:
+{{
+  "question_text": "교착 상태(Deadlock)가 발생하기 위한 필요 조건으로 옳지 않은 것은?",
+  "options": {{
+    "①": "한 프로세스가 자원을 점유한 상태에서 다른 자원을 추가로 요청한다",
+    "②": "운영체제가 프로세스로부터 자원을 강제로 회수할 수 없다",
+    "③": "프로세스들이 자원 요청과 해제를 반복하며 순환 구조를 형성한다",
+    "④": "하나의 자원을 여러 프로세스가 동시에 공유하며 접근할 수 있다"
+  }},
+  "answer": "④",
+  "explanation": "교착 상태의 4가지 필요 조건은 상호 배제, 점유와 대기, 비선점, 순환 대기입니다. ④의 '동시에 공유하며 접근'은 상호 배제 조건에 위배되므로 교착 상태 발생 조건이 아닙니다. ①은 점유와 대기, ②는 비선점, ③은 순환 대기 조건에 각각 해당합니다."
 }}""",
 
         "ox": """[O/X 문제 조건]
@@ -162,6 +210,20 @@ def build_prompt(
   "options": null,
   "answer": "O",
   "explanation": "최대 3문장 이내의 근거 중심 해설 (경어체로 작성)"
+}}
+
+[Few-shot 예시]
+예시 원문: "스택(Stack)은 LIFO(Last In First Out) 원칙을 따르는 자료구조로, 가장 마지막에 삽입된 데이터가 가장 먼저 삭제된다. 반면 큐(Queue)는 FIFO(First In First Out) 원칙을 따른다."
+
+❌ 나쁜 예시 (단순 부정, 금지):
+{{"question_text": "스택은 FIFO 원칙을 따르는 자료구조가 아니다.", "options": null, "answer": "O", "explanation": "..."}}
+
+✅ 좋은 예시 출력:
+{{
+  "question_text": "스택에서 가장 먼저 삽입된 데이터는 다른 데이터가 모두 제거되기 전까지 꺼낼 수 없다.",
+  "options": null,
+  "answer": "O",
+  "explanation": "스택은 LIFO 원칙을 따르므로 가장 먼저 삽입된 데이터는 스택의 가장 아래에 위치합니다. 따라서 그 위에 쌓인 모든 데이터가 제거되어야만 꺼낼 수 있으므로 해당 문장은 참입니다."
 }}""",
 
         "fill_in_the_blank": """[빈칸 채우기 문제 조건]
@@ -176,6 +238,20 @@ def build_prompt(
   "options": null,
   "answer": "원문기준정답단어",
   "explanation": "최대 3문장 이내의 근거 중심 해설 (경어체로 작성)"
+}}
+
+[Few-shot 예시]
+예시 원문: "페이지 교체 알고리즘 중 LRU(Least Recently Used)는 가장 오랫동안 사용되지 않은 페이지를 교체하는 방식이다. 이는 최근에 사용된 페이지는 곧 다시 사용될 가능성이 높다는 시간 지역성 원리에 기반한다."
+
+❌ 나쁜 예시 (안내 문구 포함, 금지):
+{{"question_text": "다음 빈칸에 들어갈 알고리즘 이름을 쓰시오. LRU는 가장 오랫동안 _____ 페이지를 교체한다.", ...}}
+
+✅ 좋은 예시 출력:
+{{
+  "question_text": "LRU 알고리즘은 _____ 원리에 기반하여 가장 오랫동안 참조되지 않은 페이지를 교체한다.",
+  "options": null,
+  "answer": "시간 지역성",
+  "explanation": "LRU는 최근에 사용된 페이지가 곧 다시 사용될 가능성이 높다는 시간 지역성(Temporal Locality) 원리를 전제로 설계된 알고리즘입니다. 따라서 가장 오랫동안 참조되지 않은 페이지를 교체 대상으로 선정합니다."
 }}""",
     }[question_type]
 
@@ -324,6 +400,7 @@ async def _generate_questions_from_chunks(
     db: AsyncSession,
     quiz_group_id: uuid_lib.UUID = None,
     round_number: int = None,
+    textbook_chunks: list | None = None,
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
 
@@ -368,7 +445,7 @@ async def _generate_questions_from_chunks(
                         continue
                     if not chunk.original_text or not chunk.original_text.strip():
                         continue
-                    task_list.append((priority, importance, chunk))
+                    task_list.append((fallback_priority, importance, chunk))
                     used_chunk_ids.add(chunk.id)
                     added += 1
                 if added >= target_count:
@@ -383,8 +460,16 @@ async def _generate_questions_from_chunks(
         keywords = importance.keywords or []
 
         try:
-            prompt = build_prompt(chunk.original_text, keywords, question_type)
-            prompt += prompt
+            if textbook_chunks is not None and chunk.embedding is not None:
+                best_textbook = find_best_match_chunk(chunk.embedding, textbook_chunks)
+                if best_textbook:
+                    print(f"[문제 생성] [{task_idx+1}] 교재 유사 청크 매칭 (p.{best_textbook.page_number})")
+                    context_text = f"[필기본 내용]\n{chunk.original_text}\n\n[교재 관련 내용]\n{best_textbook.original_text}"
+                else:
+                    context_text = chunk.original_text
+            else:
+                context_text = chunk.original_text
+            prompt = build_prompt(context_text, keywords, question_type)
         except Exception as e:
             print(f"[문제 생성] [{task_idx+1}] build_prompt 예외: {type(e).__name__}: {e}")
             return None
@@ -529,11 +614,26 @@ async def generate_questions_service(
     db: AsyncSession,
 ) -> QuestionGenerateResponse:
 
+    # 그룹 내 문서 목록 조회 → 듀얼 모드 감지
+    docs_stmt = select(Document).where(Document.group_id == request.group_id)
+    docs = (await db.execute(docs_stmt)).scalars().all()
+
+    textbook_doc_ids = [d.id for d in docs if get_doc_category(d.doc_type) == "textbook"]
+    notes_doc_ids = [d.id for d in docs if get_doc_category(d.doc_type) == "notes"]
+    is_dual_mode = bool(textbook_doc_ids) and bool(notes_doc_ids)
+
+    if is_dual_mode:
+        print(f"[문제 생성] 듀얼 모드 감지 (교재 {len(textbook_doc_ids)}개 / 필기본 {len(notes_doc_ids)}개)")
+        chunk_filter = DocumentChunk.document_id.in_(notes_doc_ids)
+    else:
+        chunk_filter = Document.group_id == request.group_id
+
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
         .where(Document.group_id == request.group_id)
+        .where(chunk_filter)
     )
     rows = (await db.execute(stmt)).all()
 
@@ -546,6 +646,17 @@ async def generate_questions_service(
 
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
+
+    # 듀얼 모드: 교재 chunk를 embedding 포함하여 미리 로드
+    textbook_chunks = None
+    if is_dual_mode:
+        tb_stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id.in_(textbook_doc_ids))
+            .where(DocumentChunk.embedding.isnot(None))
+        )
+        textbook_chunks = (await db.execute(tb_stmt)).scalars().all()
+        print(f"[문제 생성] 교재 청크 {len(textbook_chunks)}개 로드 완료")
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -577,6 +688,7 @@ async def generate_questions_service(
         db=db,
         quiz_group_id=quiz_group_id,
         round_number=next_round,
+        textbook_chunks=textbook_chunks,
     )
 
     await db.commit()
@@ -816,11 +928,24 @@ async def regenerate_from_wrong_service(
         wrong_chunk_rows = (await db.execute(stmt)).all()
         wrong_chunk_ids = {r[0] for r in wrong_chunk_rows}
 
+    regen_docs_stmt = select(Document).where(Document.group_id == request.group_id)
+    regen_docs = (await db.execute(regen_docs_stmt)).scalars().all()
+    regen_textbook_ids = [d.id for d in regen_docs if get_doc_category(d.doc_type) == "textbook"]
+    regen_notes_ids = [d.id for d in regen_docs if get_doc_category(d.doc_type) == "notes"]
+    regen_dual = bool(regen_textbook_ids) and bool(regen_notes_ids)
+
+    regen_chunk_filter = (
+        DocumentChunk.document_id.in_(regen_notes_ids)
+        if regen_dual
+        else Document.group_id == request.group_id
+    )
+
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
         .where(Document.group_id == request.group_id)
+        .where(regen_chunk_filter)
     )
     rows = (await db.execute(stmt)).all()
 
@@ -832,6 +957,15 @@ async def regenerate_from_wrong_service(
     user = user_q.scalar_one_or_none()
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
+
+    regen_textbook_chunks = None
+    if regen_dual:
+        tb_stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id.in_(regen_textbook_ids))
+            .where(DocumentChunk.embedding.isnot(None))
+        )
+        regen_textbook_chunks = (await db.execute(tb_stmt)).scalars().all()
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -866,6 +1000,7 @@ async def regenerate_from_wrong_service(
         db=db,
         quiz_group_id=quiz_group_id,
         round_number=next_round,
+        textbook_chunks=regen_textbook_chunks,
     )
 
     await db.commit()
