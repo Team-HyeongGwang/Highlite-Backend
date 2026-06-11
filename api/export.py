@@ -158,7 +158,12 @@ def _build_markdown(title: str, synthesized_text: str) -> str:
             color = line[7:end]
             rest = line[end + 1:]
             emoji = _EMOJI_MAP.get(color, "")
-            lines.append(f"{emoji} {rest}".strip() if emoji else rest)
+            if emoji and rest.startswith("## "):
+                lines.append(f"## {emoji} {rest[3:]}")
+            elif emoji and rest.startswith("# "):
+                lines.append(f"# {emoji} {rest[2:]}")
+            else:
+                lines.append(f"{emoji} {rest}".strip() if emoji else rest)
         else:
             lines.append(line)
     lines.append("")
