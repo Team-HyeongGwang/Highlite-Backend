@@ -82,8 +82,9 @@ async def analyze_chunk_importance(request: ImportanceRequest) -> models.Importa
         except asyncio.TimeoutError:
             print(f"[Warning] 청크 {request.chunk_id} 응답 잠수! ({attempt+1}/{MAX_RETRIES}) 즉시 재시도 🔄")
         except Exception as e:
-            print(f"[Warning] 청크 {request.chunk_id} 통신 에러. 1초 후 재시도 🔄")
-            await asyncio.sleep(1)
+            wait_time = (attempt + 1) * 5
+            print(f"[Warning] 청크 {request.chunk_id} 통신 에러. {wait_time}초 후 재시도 🔄")
+            await asyncio.sleep(wait_time)
 
     if not response:
         print(f"[Error] 청크 {request.chunk_id} 최종 실패! 기본값(0점)으로 처리하고 넘어갑니다. 😭")
