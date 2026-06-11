@@ -271,7 +271,7 @@ async def send_to_importance_agent(input: dict) -> dict:
     highlighter_ranking = (ranking["highlighter_ranking"] or {}) if ranking else {}
     pen_ranking = (ranking["pen_ranking"] or {}) if ranking else {}
 
-    print(f"\n[Master Pipeline] 총 {len(chunks)}개의 청크 중요도 분석 시작... (10개씩 API 호출 후 일괄 DB 저장) 🚀")
+    print(f"\n[Master Pipeline] 총 {len(chunks)}개의 청크 중요도 분석 시작... (50개씩 API 호출 후 일괄 DB 저장) 🚀")
 
     semaphore = asyncio.Semaphore(50)
 
