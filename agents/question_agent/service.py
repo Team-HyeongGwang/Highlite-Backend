@@ -61,11 +61,11 @@ def get_priority(meta_data, highlighter_ranking: dict, pen_ranking: dict) -> int
         handwriting_color = meta_data.get("handwriting_color")
 
         if highlight_color:
-            rank = highlighter_ranking.get(highlight_color, 99)
-            best = min(best, rank)
+            for color in [c.strip() for c in highlight_color.split(",")]:
+                best = min(best, highlighter_ranking.get(color, 99))
         if handwriting_color:
-            rank = pen_ranking.get(handwriting_color, 99)
-            best = min(best, rank)
+            for color in [c.strip() for c in handwriting_color.split(",")]:
+                best = min(best, pen_ranking.get(color, 99))
 
     return best if best != 99 else 3
 
@@ -99,7 +99,7 @@ def get_doc_category(doc_type_raw) -> str | None:
         return None
     try:
         parsed = json.loads(doc_type_raw) if isinstance(doc_type_raw, str) else doc_type_raw
-        return parsed.get("type")  # "textbook" | "summary_note" | None
+        return parsed.get("type")
     except Exception:
         return None
 
@@ -402,7 +402,7 @@ async def _generate_questions_from_chunks(
                         continue
                     if not chunk.original_text or not chunk.original_text.strip():
                         continue
-                    task_list.append((priority, importance, chunk))
+                    task_list.append((fallback_priority, importance, chunk))
                     used_chunk_ids.add(chunk.id)
                     added += 1
                 if added >= target_count:
@@ -884,11 +884,24 @@ async def regenerate_from_wrong_service(
         wrong_chunk_rows = (await db.execute(stmt)).all()
         wrong_chunk_ids = {r[0] for r in wrong_chunk_rows}
 
+    regen_docs_stmt = select(Document).where(Document.group_id == request.group_id)
+    regen_docs = (await db.execute(regen_docs_stmt)).scalars().all()
+    regen_textbook_ids = [d.id for d in regen_docs if get_doc_category(d.doc_type) == "textbook"]
+    regen_notes_ids = [d.id for d in regen_docs if get_doc_category(d.doc_type) == "notes"]
+    regen_dual = bool(regen_textbook_ids) and bool(regen_notes_ids)
+
+    regen_chunk_filter = (
+        DocumentChunk.document_id.in_(regen_notes_ids)
+        if regen_dual
+        else Document.group_id == request.group_id
+    )
+
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
         .where(Document.group_id == request.group_id)
+        .where(regen_chunk_filter)
     )
     rows = (await db.execute(stmt)).all()
 
@@ -900,6 +913,15 @@ async def regenerate_from_wrong_service(
     user = user_q.scalar_one_or_none()
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
+
+    regen_textbook_chunks = None
+    if regen_dual:
+        tb_stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id.in_(regen_textbook_ids))
+            .where(DocumentChunk.embedding.isnot(None))
+        )
+        regen_textbook_chunks = (await db.execute(tb_stmt)).scalars().all()
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -934,6 +956,7 @@ async def regenerate_from_wrong_service(
         db=db,
         quiz_group_id=quiz_group_id,
         round_number=next_round,
+        textbook_chunks=regen_textbook_chunks,
     )
 
     await db.commit()
