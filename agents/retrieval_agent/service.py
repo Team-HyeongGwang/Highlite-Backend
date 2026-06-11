@@ -8,6 +8,7 @@ import google.generativeai as genai
 from typing import TypedDict
 import asyncio
 from pathlib import Path
+from agents.retrieval_agent.primer import get_active_model
 from db.models import Document
 from agents.importance_agent.schemas import ImportanceRequest
 from typing import Optional
@@ -30,8 +31,14 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", 
+llm_pro = ChatGoogleGenerativeAI(
+    model="gemini-2.5-pro",
+    temperature=0,
+    google_api_key=GOOGLE_API_KEY,
+)
+
+llm_flash = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
     temperature=0,
     google_api_key=GOOGLE_API_KEY,
 )
@@ -104,20 +111,24 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
         from .primer import get_cache, SYSTEM_PROMPT
         
         # 1) primer.py에서 구워진 캐시 스냅샷 확보 시도
-        cache = None
+        pro_cache = None
+        flash_cache = None
+        
         try:
-            cache = get_cache()
+            pro_cache = get_cache("pro")
+            flash_cache = get_cache("flash")
         except Exception:
             pass # 캐시가 생성되지 않았거나 에러가 나면 안전하게 None 유지
         
         # 2) 캐시 유무(TTL 만료 포함)에 따른 분기 처리
-        if cache and hasattr(cache, 'name'):
+        if pro_cache and hasattr(pro_cache, 'name'):
+            
             # 캐시가 유효할 때는, 캐시에서 바로 결과 few-shot prompting 정보를 가져옴
             cached_llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash", 
+                model="gemini-2.5-pro",
                 temperature=0,
                 google_api_key=GOOGLE_API_KEY,
-                cached_content=cache.name  # 구워진 캐시 ID 매핑
+                cached_content=pro_cache.name, # Pro 캐시 주입
             )
             messages = [
                 HumanMessage(content=[
@@ -125,11 +136,42 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                     {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."}
                 ])
             ]
-            invocation_target = cached_llm
-        
+            
+            try:
+                response = await cached_llm.ainvoke(messages)
+                
+            except Exception as e:
+                # 🎯 [변경] 429 / 503 문자열 필터링 그물
+                err_msg = str(e)
+                if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "503", "ServiceUnavailable"]):
+                    print(f"[Fallback ⚠️] {page_num}p 캐시 추론 실패 ({type(e).__name__}) — 429/503 감지되어 Flash 캐시로 폴백합니다.")
+                    
+                    if flash_cache and hasattr(flash_cache, 'name'):
+                        print(f"[Fallback ⚡️] {page_num}p Pro 제한 감지 ➔ Flash '캐시 모드'로 완벽 폴백합니다.")
+                        cached_llm_flash = ChatGoogleGenerativeAI(
+                            model="gemini-2.5-flash",  # 👈 모델도 Flash!
+                            temperature=0,
+                            google_api_key=GOOGLE_API_KEY,
+                            cached_content=flash_cache.name, # 👈 캐시도 Flash 전용! (에러 해결 핵심)
+                        )
+                        response = await cached_llm_flash.ainvoke(messages)
+                    else:
+                        # 최악의 경우 Flash 캐시마저 없으면 쌩 프롬프트 주입 호출
+                        print(f"[Fallback ⚠️] {page_num}p Flash 캐시 미존재 ➔ 일반 쌩 Flash로 우회합니다.")
+                        fallback_messages = [
+                            SystemMessage(content=SYSTEM_PROMPT),
+                            HumanMessage(content=[
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                                {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."}
+                            ])
+                        ]
+                        response = await llm_flash.ainvoke(fallback_messages)
+                else:
+                    raise
+                
+        # 3) 처음부터 캐시가 아예 없이 진입했을 때 (예외 케이스 방어)
         else:
-            # 캐시가 없거나 만료된 경우, 직접 프롬프트 주입
-            print(f"[Fallback ⚠️] {page_num} 페이지 분석에 캐시를 찾을 수 없어 일반 호출(프롬프트 직접 포함)로 우회합니다.")
+            print(f"[Fallback ⚠️] {page_num} 페이지 분석에 캐시를 찾을 수 없어 일반 호출로 진행합니다.")
             messages = [
                 SystemMessage(content=SYSTEM_PROMPT),
                 HumanMessage(content=[
@@ -137,11 +179,26 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
                     {"type": "text", "text": f"페이지 {page_num} 텍스트를 추출해 주세요."}
                 ])
             ]
-            invocation_target = llm
+            try:
+                response = await llm_pro.ainvoke(messages)
+            except Exception as e:
+                err_msg = str(e)
+                if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "503", "ServiceUnavailable"]):
+                    if flash_cache and hasattr(flash_cache, 'name'):
+                        print(f"[Fallback ⚡️] {page_num}p Pro 직접 호출 실패 ➔ Flash '캐시 모드'로 폴백합니다.")
+                        cached_llm_flash = ChatGoogleGenerativeAI(
+                            model="gemini-2.5-flash",
+                            temperature=0,
+                            google_api_key=GOOGLE_API_KEY,
+                            cached_content=flash_cache.name,
+                        )
+                        response = await cached_llm_flash.ainvoke(messages)
+                    else:
+                        print(f"[Fallback ⚠️] {page_num}p Pro 직접 호출 실패 ➔ 일반 Flash로 폴백합니다.")
+                        response = await llm_flash.ainvoke(messages)
+                else:
+                    raise
             
-            # 3) 최종 결정된 타겟으로 LLM 호출
-        response = await invocation_target.ainvoke(messages)
-        
         page_chunks = []
         try:
             raw_content = response.content
@@ -173,7 +230,7 @@ async def extract_pdf_to_raw(input_data: dict) -> dict:
         print(f"   -> {page_num} 페이지 추출 완료! ⚡️")
         return page_chunks
 
-    semaphore = asyncio.Semaphore(50)
+    semaphore = asyncio.Semaphore(25) # 제미나이 API 부하 방지
     
     async def sem_process(page_num, b64):
         async with semaphore:
