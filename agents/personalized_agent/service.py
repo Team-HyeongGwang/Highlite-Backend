@@ -60,7 +60,7 @@ async def record_quiz_session(
             else:
                 score_modifier = -1.5 if ans["is_correct"] else 5.0
 
-            imp_res.score = max(0.0, imp_res.score + score_modifier)
+            imp_res.score = max(0.0, min(15.0, imp_res.score + score_modifier))
 
     await db.commit()
     return True
