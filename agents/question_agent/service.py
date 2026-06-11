@@ -431,6 +431,7 @@ async def _generate_questions_from_chunks(
         for (source, result), review in zip(valid_results, eval_results):
             if isinstance(review, Exception):
                 continue
+            print(f"[평가] {source} feedback: {review.get('feedback')}")
             candidates.append({"source": source, "result": result, "review": review})
 
         if not candidates:
