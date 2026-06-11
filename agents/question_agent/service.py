@@ -453,6 +453,10 @@ async def _generate_questions_from_chunks(
                 best = max(candidates, key=lambda x: x["review"].get("quality_score", 0))
                 print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] ⚠️ 미승인이지만 최고 점수 채택 (score: {best['review'].get('quality_score', 0):.2f})")
 
+        if best["review"].get("quality_score", 0) < 3:
+            print(f"[평가 Agent] [{task_idx+1}/{len(task_list)}] ❌ 점수 {best['review'].get('quality_score', 0)}점 → 1~2점 문제 반려")
+            return None
+
         return (priority, importance, chunk, question_type, best["result"])
 
     # ── 배치 병렬 실행 ──
