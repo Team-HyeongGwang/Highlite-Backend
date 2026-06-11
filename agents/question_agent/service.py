@@ -92,6 +92,39 @@ def get_source_type(meta_data) -> str:
     return "highlight"
 
 # ────────────────────────────────────────
+# doc_type JSON 파싱
+# ────────────────────────────────────────
+def get_doc_category(doc_type_raw) -> str | None:
+    if not doc_type_raw:
+        return None
+    try:
+        parsed = json.loads(doc_type_raw) if isinstance(doc_type_raw, str) else doc_type_raw
+        return parsed.get("type")  # "textbook" | "summary_note" | None
+    except Exception:
+        return None
+
+# ────────────────────────────────────────
+# 교재 유사 청크 탐색 (in-memory cosine similarity)
+# ────────────────────────────────────────
+def _cosine_similarity(a, b) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+def find_best_match_chunk(query_emb, textbook_chunks: list):
+    if query_emb is None or not textbook_chunks:
+        return None
+    best, best_score = None, -1.0
+    for chunk in textbook_chunks:
+        if chunk.embedding is None:
+            continue
+        score = _cosine_similarity(list(query_emb), list(chunk.embedding))
+        if score > best_score:
+            best, best_score = chunk, score
+    return best
+
+# ────────────────────────────────────────
 # 문제 유형 결정
 # ────────────────────────────────────────
 def get_question_type(priority: int) -> str:
@@ -324,6 +357,7 @@ async def _generate_questions_from_chunks(
     db: AsyncSession,
     quiz_group_id: uuid_lib.UUID = None,
     round_number: int = None,
+    textbook_chunks: list | None = None,
 ) -> List[QuestionItem]:
     counts = distribute_counts(question_count, chunks_by_priority)
 
@@ -383,8 +417,16 @@ async def _generate_questions_from_chunks(
         keywords = importance.keywords or []
 
         try:
-            prompt = build_prompt(chunk.original_text, keywords, question_type)
-            prompt += prompt
+            if textbook_chunks is not None and chunk.embedding is not None:
+                best_textbook = find_best_match_chunk(chunk.embedding, textbook_chunks)
+                if best_textbook:
+                    print(f"[문제 생성] [{task_idx+1}] 교재 유사 청크 매칭 (p.{best_textbook.page_number})")
+                    context_text = f"[필기본 내용]\n{chunk.original_text}\n\n[교재 관련 내용]\n{best_textbook.original_text}"
+                else:
+                    context_text = chunk.original_text
+            else:
+                context_text = chunk.original_text
+            prompt = build_prompt(context_text, keywords, question_type)
         except Exception as e:
             print(f"[문제 생성] [{task_idx+1}] build_prompt 예외: {type(e).__name__}: {e}")
             return None
@@ -528,11 +570,26 @@ async def generate_questions_service(
     db: AsyncSession,
 ) -> QuestionGenerateResponse:
 
+    # 그룹 내 문서 목록 조회 → 듀얼 모드 감지
+    docs_stmt = select(Document).where(Document.group_id == request.group_id)
+    docs = (await db.execute(docs_stmt)).scalars().all()
+
+    textbook_doc_ids = [d.id for d in docs if get_doc_category(d.doc_type) == "textbook"]
+    notes_doc_ids = [d.id for d in docs if get_doc_category(d.doc_type) == "notes"]
+    is_dual_mode = bool(textbook_doc_ids) and bool(notes_doc_ids)
+
+    if is_dual_mode:
+        print(f"[문제 생성] 듀얼 모드 감지 (교재 {len(textbook_doc_ids)}개 / 필기본 {len(notes_doc_ids)}개)")
+        chunk_filter = DocumentChunk.document_id.in_(notes_doc_ids)
+    else:
+        chunk_filter = Document.group_id == request.group_id
+
     stmt = (
         select(ImportanceResult, DocumentChunk, Document)
         .join(DocumentChunk, ImportanceResult.chunk_id == DocumentChunk.id)
         .join(Document, DocumentChunk.document_id == Document.id)
         .where(Document.group_id == request.group_id)
+        .where(chunk_filter)
     )
     rows = (await db.execute(stmt)).all()
 
@@ -545,6 +602,17 @@ async def generate_questions_service(
 
     highlighter_ranking = user.highlighter_ranking or {}
     pen_ranking = user.pen_ranking or {}
+
+    # 듀얼 모드: 교재 chunk를 embedding 포함하여 미리 로드
+    textbook_chunks = None
+    if is_dual_mode:
+        tb_stmt = (
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id.in_(textbook_doc_ids))
+            .where(DocumentChunk.embedding.isnot(None))
+        )
+        textbook_chunks = (await db.execute(tb_stmt)).scalars().all()
+        print(f"[문제 생성] 교재 청크 {len(textbook_chunks)}개 로드 완료")
 
     chunks_by_priority = {1: [], 2: [], 3: []}
     for importance, chunk, _ in rows:
@@ -576,6 +644,7 @@ async def generate_questions_service(
         db=db,
         quiz_group_id=quiz_group_id,
         round_number=next_round,
+        textbook_chunks=textbook_chunks,
     )
 
     await db.commit()
