@@ -5,7 +5,8 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import RedirectResponse
 from authlib.integrations.starlette_client import OAuth
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +22,9 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "highlite_super_secret_key")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise ValueError("🚨 .env 파일에 JWT_SECRET_KEY가 설정되지 않았습니다!")
 
 oauth = OAuth()
 oauth.register(
@@ -33,11 +36,7 @@ oauth.register(
 )
 
 class NicknameUpdate(BaseModel):
-    email: str
     new_nickname: str
-
-class AccountDelete(BaseModel):
-    email: str
 
 # JWT 토큰 생성 함수
 def create_access_token(data: dict):
@@ -46,6 +45,23 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm="HS256")
     return encoded_jwt
+
+security = HTTPBearer()
+
+async def get_current_user(
+    cred: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> models.User:
+    try:
+        payload = jwt.decode(cred.credentials, JWT_SECRET_KEY, algorithms=["HS256"])
+    except jwt.PyJWTError:  # 서명이 틀렸거나 만료된 토큰
+        raise HTTPException(status_code=401, detail="로그인이 만료되었거나 유효하지 않습니다.")
+
+    result = await db.execute(select(models.User).where(models.User.email == payload.get("sub")))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status_code=401, detail="사용자를 찾을 수 없습니다.")
+    return user
 
 # 구글 로그인 창으로 보내는 API
 @router.get("/login/google")
@@ -108,26 +124,24 @@ async def auth_google_callback(request: Request, db: AsyncSession = Depends(get_
         return RedirectResponse(url="http://localhost:8501/?error=login_failed")
 
 @router.put("/nickname")
-async def update_nickname(data: NicknameUpdate, db: AsyncSession = Depends(get_db)):
-    query = select(models.User).where(models.User.email == data.email)
-    result = await db.execute(query)
-    user = result.scalars().first()
-    
-    if user:
-        user.username = data.new_nickname
-        await db.commit()
-        return {"status": "success", "new_nickname": user.username}
-    
-    return {"status": "error", "message": "유저를 찾을 수 없습니다."}
+async def update_nickname(
+    data: NicknameUpdate,
+    user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user.username = data.new_nickname
+    await db.commit()
+    return {"status": "success", "new_nickname": user.username}
 
 @router.delete("/account")
-async def delete_account(data: AccountDelete, db: AsyncSession = Depends(get_db)):
+async def delete_account(
+    user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     try:
-        # 이메일로 유저를 찾아서 삭제
-        query = delete(models.User).where(models.User.email == data.email)
-        await db.execute(query)
+        await db.execute(delete(models.User).where(models.User.id == user.id))
         await db.commit()
         return {"status": "success", "message": "회원 탈퇴가 완료되었습니다."}
-    except Exception as e:
+    except Exception:
         await db.rollback()
         return {"status": "error", "message": "탈퇴 처리 중 오류가 발생했습니다."}
